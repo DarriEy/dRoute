@@ -1,15 +1,6 @@
-# dMC-Route: Differentiable River Routing Library
+# dRoute: Differentiable River Routing Library
 
-A high-performance, differentiable routing library for hydrological modeling and machine learning applications. Implements multiple routing methods with automatic differentiation support via CoDiPack.
-
-## Features
-
-- **Multiple routing methods**: Muskingum-Cunge, IRF, Diffusive Wave, KWT, and more
-- **Automatic differentiation**: Full AD via CoDiPack for gradient-based optimization
-- **Python bindings**: Direct memory access via pybind11 (no CSV/subprocess overhead)
-- **PyTorch integration**: Use as a differentiable layer in neural networks
-- **BMI compliant**: Standard interface for model coupling
-- **NetCDF support**: Read network topology from mizuRoute-style files
+A differentiable routing library for hydrological modeling and machine learning applications. Implements multiple routing methods with automatic differentiation support via CoDiPack.
 
 ## Routing Methods
 
@@ -120,27 +111,6 @@ router.compute_gradients([outlet_id], [1.0])
 grads = network.get_grad_manning_n_all()
 ```
 
-### PyTorch Integration
-
-```python
-import torch
-import pydmc_route as dmc
-
-class dRoutingLayer(torch.nn.Module):
-    def __init__(self, num_reaches, ...):
-        super().__init__()
-        self.network = dmc.Network()
-        # ... setup network ...
-        self.router = dmc.MuskingumCungeRouter(self.network, config)
-        self.manning_n = torch.nn.Parameter(torch.full((num_reaches,), 0.035))
-    
-    def forward(self, lateral_inflows):
-        # Forward pass through C++ router
-        # Gradients are computed by dRoute and transferred to PyTorch
-        ...
-```
-
-See `examples/pytorch_routing.py` for complete example.
 
 ## Learnable Parameters
 
@@ -166,24 +136,3 @@ The Muskingum-Cunge router supports gradients for:
 - pybind11 (auto-downloaded if not found)
 - CoDiPack (auto-downloaded)
 - Optional: NetCDF-C, OpenMP
-
-## License
-
-MIT License
-
-## Citation
-
-If you use dMC-Route in your research, please cite:
-
-```bibtex
-@software{dmc_route,
-  title = {dMC-Route: Differentiable River Routing Library},
-  year = {2024},
-  url = {https://github.com/your-org/dmc-route}
-}
-```
-
-## References
-
-1. Cunge, J.A. (1969). On the subject of a flood propagation computation method. *J. Hydraul. Res.*, 7(2), 205-230.
-2. Bindas et al. (2024). Improving River Routing Using a Differentiable Muskingum-Cunge Model. *WRR*.
