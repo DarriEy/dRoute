@@ -32,14 +32,15 @@ struct RouterConfig {
     int max_substeps = 10;
     
     // === IRF Options ===
-    int irf_max_kernel_size = 200;         // Maximum kernel length [timesteps]
-    double irf_shape_param = 2.5;          // Gamma shape parameter (k)
-    bool irf_soft_mask = true;             // Use sigmoid masking for differentiable kernel length
-    double irf_mask_steepness = 10.0;      // Sigmoid steepness for soft mask
+    int irf_max_kernel_size = 500;          // Maximum kernel length [timesteps] - large for safety
+    double irf_shape_param = 2.5;           // Gamma shape parameter (k)
+    bool irf_soft_mask = true;              // Use sigmoid masking for differentiable kernel length
+    double irf_mask_steepness = 10.0;       // Sigmoid steepness for soft mask
     
     // === Diffusive Wave Options ===
-    int dw_num_nodes = 50;                 // Spatial nodes per reach (more = better CFL)
+    int dw_num_nodes = 20;                  // Spatial nodes per reach - reduced from 50 for performance
     bool dw_use_ift_adjoint = true;        // Use Implicit Function Theorem for adjoints
+    int dw_max_substeps = 50;              // Maximum sub-steps per timestep (caps runtime)
     
     // === Soft-Gated KWT Options ===
     double kwt_gate_steepness = 5.0;       // Soft gate sharpness (lower = smoother gradients)
@@ -287,7 +288,18 @@ inline Real MuskingumCungeRouter::compute_K(const Reach& reach, const Real& Q_re
     celerity = safe_max(celerity, Real(0.1));  // Prevent division by zero
     
     // K = Δx / c
-    return Real(reach.length) / celerity;
+    Real K = Real(reach.length) / celerity;
+    
+    // Cap K to prevent extremely slow routing
+    // K should be at most ~10 timesteps worth for reasonable mass throughput
+    Real K_max = Real(10.0 * config_.dt);
+    if (config_.enable_gradients && config_.use_smooth_bounds) {
+        K = smooth_min(K, K_max, config_.smooth_epsilon);
+    } else {
+        K = safe_min(K, K_max);
+    }
+    
+    return K;
 }
 
 inline Real MuskingumCungeRouter::compute_X(const Reach& reach, const Real& Q_ref, 
@@ -339,7 +351,11 @@ inline Real MuskingumCungeRouter::compute_reach_inflow(const Reach& reach) {
 
 inline Real MuskingumCungeRouter::route_reach(Reach& reach, double dt) {
     // Reference discharge for hydraulic calculations
+    // Use max of previous outflow, current inflow, AND lateral inflow for better stability
+    // This prevents extremely slow routing when starting from zero flow
     Real Q_ref = safe_max(reach.outflow_prev, Real(config_.min_flow));
+    Q_ref = safe_max(Q_ref, reach.inflow_curr);
+    Q_ref = safe_max(Q_ref, reach.lateral_inflow);
     
     // Compute Muskingum parameters
     Real K = compute_K(reach, Q_ref);
@@ -360,11 +376,6 @@ inline Real MuskingumCungeRouter::route_reach(Reach& reach, double dt) {
         Real Q_in_prev = reach.inflow_prev;
         Real Q_in_curr = reach.inflow_curr;
         Real Q_out_prev = reach.outflow_prev;
-        
-        // CRITICAL: Do NOT divide lateral by num_substeps!
-        // C4 coefficient is computed with sub_dt, which already scales it down.
-        // Each sub-step adds C4(sub_dt)*lateral, and after N steps:
-        // N * C4(sub_dt) * lateral ≈ C4(dt) * lateral (mass balance correct)
         Real lateral = reach.lateral_inflow;
         
         // Linear interpolation increments for inflow
@@ -377,10 +388,14 @@ inline Real MuskingumCungeRouter::route_reach(Reach& reach, double dt) {
             Real Q_in_s_curr = Q_in_prev + dQ_in * Real(s + 1);
             
             // Compute routing coefficients for sub-timestep
+            // CRITICAL: All coefficients must use the same dt (sub_dt) for mass conservation!
+            // At steady state: Q_out = C4/(1-C3) * lateral
+            // This equals lateral only when C1+C2+C3=1 and C4/(1-C3)=1,
+            // which requires all coefficients use consistent dt.
             Real C1, C2, C3, C4;
             compute_routing_coefficients(K, X, sub_dt, C1, C2, C3, C4);
             
-            // Apply Muskingum-Cunge equation
+            // Apply Muskingum-Cunge equation with consistent coefficients
             Real Q_out_new = C1 * Q_in_s_curr + 
                              C2 * Q_in_s_prev + 
                              C3 * Q_out +
@@ -663,13 +678,46 @@ inline void IRFRouter::initialize_kernels() {
     irf_params_.clear();
     analytical_dQ_dn_.clear();
     
+    // Diagnostic: track travel time statistics
+    double max_travel_time = 0.0;
+    double max_kernel_coverage_time = max_kernel_size_ * config_.dt;  // seconds
+    int num_truncated = 0;
+    
+    std::cerr << "IRF Kernel Diagnostics:\n";
+    std::cerr << "  Shape parameter (k): " << shape_param_ << "\n";
+    std::cerr << "  Max kernel size: " << max_kernel_size_ << " timesteps\n";
+    std::cerr << "  Timestep dt: " << config_.dt << " seconds\n";
+    std::cerr << "  Max kernel coverage: " << max_kernel_coverage_time/3600.0 << " hours\n";
+    
     for (int reach_id : network_.topological_order()) {
         Reach& reach = network_.get_reach(reach_id);
         build_base_kernel(reach_id, reach);
         
+        // Check for kernel truncation
+        double n = to_double(reach.manning_n);
+        double S = reach.slope;
+        double velocity = (1.0 / n) * std::pow(1.0, 2.0/3.0) * std::sqrt(S);
+        velocity = std::max(0.1, std::min(5.0, velocity));
+        double travel_time = reach.length / velocity;
+        
+        // For gamma with k=2.5, 99% mass is within ~3 * travel_time
+        double needed_coverage = 3.0 * travel_time;
+        if (needed_coverage > max_kernel_coverage_time) {
+            num_truncated++;
+        }
+        max_travel_time = std::max(max_travel_time, travel_time);
+        
         // Initialize inflow history to fixed size
         inflow_history_[reach_id] = std::deque<Real>(max_kernel_size_, Real(0.0));
         analytical_dQ_dn_[reach_id] = 0.0;
+    }
+    
+    // Print diagnostic summary
+    std::cerr << "  Max travel time: " << max_travel_time/3600.0 << " hours\n";
+    std::cerr << "  Reaches potentially truncated: " << num_truncated << "/" << network_.topological_order().size() << "\n";
+    if (num_truncated > 0) {
+        std::cerr << "  WARNING: Increase irf_max_kernel_size for better mass conservation!\n";
+        std::cerr << "  Suggested size: " << static_cast<int>(3.0 * max_travel_time / config_.dt) + 10 << " timesteps\n";
     }
     
     initialized_ = true;
@@ -790,41 +838,87 @@ inline void IRFRouter::route_reach_irf(Reach& reach) {
     velocity = safe_min(velocity, Real(5.0));
     
     Real travel_time = Real(reach.length) / velocity;
+    Real scale = travel_time / Real(shape_param_);
     
-    // Soft-masked convolution with on-the-fly weight computation
-    Real Q_out = Real(0.0);
+    // MASS-CONSERVING CONVOLUTION:
+    // Pre-compute normalized kernel weights (unit hydrograph)
+    // H[i] = w[i] / Σw[j] where Σ H[i] = 1 guarantees mass conservation
+    
+    std::vector<Real> kernel_weights(max_kernel_size_);
     Real weight_sum = Real(0.0);
     
-    int n_hist = static_cast<int>(history.size());
-    for (int i = 0; i < n_hist; ++i) {
-        Real w = compute_masked_weight(reach.id, i, travel_time);
-        Q_out = Q_out + history[i] * w;
+    // Find where most of the kernel mass is (for diagnostics)
+    double peak_weight = 0.0;
+    int peak_idx = 0;
+    
+    for (int i = 0; i < max_kernel_size_; ++i) {
+        Real t_i = Real(kernel_times_[i]);
+        // Gamma PDF (unnormalized): t^(k-1) * exp(-t/θ)
+        Real w = pow(t_i, Real(shape_param_ - 1.0)) * exp(-t_i / scale);
+        kernel_weights[i] = w;
         weight_sum = weight_sum + w;
+        
+        if (to_double(w) > peak_weight) {
+            peak_weight = to_double(w);
+            peak_idx = i;
+        }
     }
     
-    // Normalize by weight sum (maintains mass balance)
+    // Check for kernel truncation (if peak is near the end, we might be losing mass)
+    static bool warned_truncation = false;
+    if (!warned_truncation && peak_idx > max_kernel_size_ * 0.7) {
+        std::cerr << "WARNING: IRF kernel peak at position " << peak_idx 
+                  << "/" << max_kernel_size_ << " for reach " << reach.id
+                  << " (travel_time=" << to_double(travel_time)/3600.0 << " hours)"
+                  << " - consider increasing irf_max_kernel_size\n";
+        warned_truncation = true;
+    }
+    
+    // Normalize to create unit hydrograph (sums to 1)
     if (to_double(weight_sum) > 1e-10) {
-        Q_out = Q_out / weight_sum;
+        for (int i = 0; i < max_kernel_size_; ++i) {
+            kernel_weights[i] = kernel_weights[i] / weight_sum;
+        }
+    } else {
+        // Emergency fallback: if kernel is all zeros, use delta function at position 0
+        kernel_weights[0] = Real(1.0);
+    }
+    
+    // Verify normalization (debug)
+    static bool verified_normalization = false;
+    if (!verified_normalization) {
+        Real check_sum = Real(0.0);
+        for (int i = 0; i < max_kernel_size_; ++i) {
+            check_sum = check_sum + kernel_weights[i];
+        }
+        if (std::abs(to_double(check_sum) - 1.0) > 0.01) {
+            std::cerr << "WARNING: IRF kernel does not sum to 1.0: " << to_double(check_sum) << "\n";
+        }
+        verified_normalization = true;
+    }
+    
+    // Apply convolution: Q_out = Σ H[i] * Q_in[t-i]
+    Real Q_out = Real(0.0);
+    int n_hist = static_cast<int>(history.size());
+    for (int i = 0; i < n_hist; ++i) {
+        Q_out = Q_out + kernel_weights[i] * history[i];
     }
     
     // Store analytical gradient approximation for fallback
     if (recording_ && config_.enable_gradients) {
-        const auto& params = irf_params_[reach.id];
         double k = shape_param_;
-        double theta = params.scale;
-        double manning_n = params.manning_n;
-        double dt = config_.dt;
+        double theta = to_double(scale);
+        double manning_n = to_double(n);
         
         // Compute analytical gradient approximation
         double dQ_dn = 0.0;
-        double w_sum = 0.0;
+        double w_sum = to_double(weight_sum);
         for (int i = 0; i < n_hist; ++i) {
             double t_i = kernel_times_[i];
             double Q_in_i = to_double(history[i]);
             double w_i = std::pow(t_i, k - 1.0) * std::exp(-t_i / theta);
             double d_w_dn = w_i * (t_i - k * theta) / (theta * manning_n);
             dQ_dn += Q_in_i * d_w_dn;
-            w_sum += w_i;
         }
         if (w_sum > 1e-10) dQ_dn /= w_sum;
         analytical_dQ_dn_[reach.id] = dQ_dn;
@@ -864,62 +958,46 @@ inline void IRFRouter::enable_gradients(bool enable) {
 }
 
 inline void IRFRouter::start_recording() {
+    if (!config_.enable_gradients || !AD_ENABLED) return;
+    
+    activate_tape();
     recording_ = true;
+    
+    // Register all parameters as inputs (same as MC router)
+    for (Real* param : network_.get_all_parameters()) {
+        register_input(*param);
+    }
+    
+    // Reset analytical gradient accumulators (kept for diagnostics)
     for (auto& [id, g] : analytical_dQ_dn_) {
         g = 0.0;
     }
 }
 
 inline void IRFRouter::stop_recording() {
+    // Don't deactivate tape yet - we need it active for gradient computation
     recording_ = false;
 }
 
 inline void IRFRouter::compute_gradients(const std::vector<int>& gauge_reaches,
                                           const std::vector<double>& dL_dQ) {
-    // Use analytical gradients for IRF
-    // dL/dn_i = dL/dQ_outlet × (routing_factor) × dQ_i/dn_i
+    if (!AD_ENABLED || gauge_reaches.empty() || dL_dQ.empty()) return;
     
-    if (gauge_reaches.empty() || dL_dQ.empty()) return;
-    
-    int outlet_id = gauge_reaches[0];
-    double dL_dQ_outlet = dL_dQ[0];
-    
-    // Get topological order
-    auto topo_order = network_.topological_order();
-    
-    // Build downstream contribution factor
-    std::unordered_map<int, double> downstream_factor;
-    downstream_factor[outlet_id] = 1.0;
-    
-    // Process in reverse topological order
-    for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
-        int reach_id = *it;
-        
-        if (downstream_factor.count(reach_id) == 0) continue;
-        double factor = downstream_factor[reach_id];
-        
-        // Set gradient for this reach
-        Reach& reach = network_.get_reach(reach_id);
-        if (analytical_dQ_dn_.count(reach_id)) {
-            reach.grad_manning_n = dL_dQ_outlet * factor * analytical_dQ_dn_[reach_id];
-        }
-        
-        // Propagate to upstream reaches with attenuation
-        double attenuation = 0.85;
-        
-        if (reach.upstream_junction_id >= 0) {
-            try {
-                const Junction& junc = network_.get_junction(reach.upstream_junction_id);
-                for (int up_id : junc.upstream_reach_ids) {
-                    if (downstream_factor.count(up_id) == 0) {
-                        downstream_factor[up_id] = factor * attenuation;
-                    } else {
-                        downstream_factor[up_id] += factor * attenuation;
-                    }
-                }
-            } catch (...) {}
-        }
+    // Register outputs and seed with loss gradients
+    for (size_t i = 0; i < gauge_reaches.size(); ++i) {
+        Reach& reach = network_.get_reach(gauge_reaches[i]);
+        register_output(reach.outflow_curr);
+        set_gradient(reach.outflow_curr, dL_dQ[i]);
     }
+    
+    // Reverse pass
+    evaluate_tape();
+    
+    // Collect gradients from tape
+    network_.collect_gradients();
+    
+    // Deactivate the tape
+    deactivate_tape();
 }
 
 inline std::unordered_map<std::string, double> IRFRouter::get_gradients() const {
@@ -937,6 +1015,7 @@ inline std::unordered_map<std::string, double> IRFRouter::get_gradients() const 
 }
 
 inline void IRFRouter::reset_gradients() {
+    reset_tape();
     network_.zero_gradients();
     for (auto& [id, g] : analytical_dQ_dn_) {
         g = 0.0;
@@ -1063,6 +1142,7 @@ private:
 inline DiffusiveWaveRouter::DiffusiveWaveRouter(Network& network, RouterConfig config)
     : network_(network), config_(std::move(config)) {
     network_.build_topology();
+    nodes_per_reach_ = config_.dw_num_nodes;  // Use config value
     initialize_state();
 }
 
@@ -1188,10 +1268,14 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
     // Total lateral inflow spread across reach length
     Real q_lat = reach.lateral_inflow / Real(reach.length);  // [m³/s/m]
     
-    // Reference Q for parameters (use mean)
+    // Reference Q for parameters (use mean, including boundary and lateral for better initialization)
     Real Q_ref = Real(0.0);
     for (int i = 0; i < n_nodes; ++i) Q_ref = Q_ref + Q[i];
     Q_ref = Q_ref / Real(n_nodes);
+    
+    // Include upstream and lateral inflow in Q_ref for better initialization
+    Q_ref = safe_max(Q_ref, Q_upstream);
+    Q_ref = safe_max(Q_ref, reach.lateral_inflow);
     
     if (config_.enable_gradients && config_.use_smooth_bounds) {
         Q_ref = smooth_max(Q_ref, Real(0.1), config_.smooth_epsilon);
@@ -1214,21 +1298,24 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
     // For AD safety, use fixed sub-step count if stability requires it
     double stability = to_double(Cr) + 2.0 * to_double(Df);
     int sub_steps = std::max(1, static_cast<int>(stability / 0.9) + 1);
+    
+    // Cap sub-steps to prevent extremely slow execution
+    sub_steps = std::min(sub_steps, config_.dw_max_substeps);
+    
     Real sub_dt = Real(dt / sub_steps);
     
     // Recompute Courant numbers for sub-timestep
     Cr = c * sub_dt / Real(dx);
     Df = D * sub_dt / Real(dx * dx);
     
-    // Source term contribution per sub-timestep
-    Real q_source = q_lat * Real(dx);  // [m³/s] added at each node per sub-step
-    
     // Sub-stepping loop
+    // The diffusive wave PDE: ∂Q/∂t + c·∂Q/∂x = D·∂²Q/∂x²
+    // Lateral inflow is added at upstream boundary (like MC approach)
     for (int s = 0; s < sub_steps; ++s) {
         // Store old values
         std::vector<Real> Q_old = Q;
         
-        // Update interior nodes
+        // Update interior nodes (no lateral source here - it enters at upstream)
         for (int i = 1; i < n_nodes - 1; ++i) {
             // Upwind advection (c > 0 assumed)
             Real advection = -Cr * (Q_old[i] - Q_old[i-1]);
@@ -1236,11 +1323,8 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
             // Central diffusion
             Real diffusion = Df * (Q_old[i+1] - Real(2.0) * Q_old[i] + Q_old[i-1]);
             
-            // Lateral source term
-            Real source = q_source * sub_dt / Real(dt);  // Scale by sub-timestep fraction
-            
-            // Update
-            Q[i] = Q_old[i] + advection + diffusion + source;
+            // Update (no distributed source - lateral enters at upstream)
+            Q[i] = Q_old[i] + advection + diffusion;
             
             // Ensure non-negative (use smooth version for AD)
             if (config_.enable_gradients && config_.use_smooth_bounds) {
@@ -1251,8 +1335,11 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
         }
         
         // Boundary conditions
-        Q[0] = Q_upstream + q_source;  // Upstream: inflow + first cell lateral
-        Q[n_nodes-1] = Q[n_nodes-2];    // Downstream: zero gradient
+        // Upstream: inflow from upstream + lateral inflow (enters at top of reach)
+        Q[0] = Q_upstream + reach.lateral_inflow;
+        
+        // Downstream: zero gradient outflow
+        Q[n_nodes-1] = Q[n_nodes-2];
     }
     
     // Update reach state (these are Real, so gradients flow through)
@@ -1260,18 +1347,22 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
     reach.outflow_curr = Q[n_nodes-1];
     
     // Analytical gradient approximation for fallback
-    // (AD should work through the Real computations above, but we keep this for comparison)
+    // dc/dn = -c/n (from Manning's equation)
+    // When n increases: c decreases -> wave slows -> peak arrives later
+    // For mass conservation routing: higher n -> more attenuation -> lower peak
+    // dQ_out/dn = -(Q_peak - Q_mean) * (c/n) * (dt/L) is negative when peak > mean
     if (recording_ && config_.enable_gradients) {
-        // dc/dn = -c/n (from Manning's equation)
-        // dQ_out/dn ≈ dQ_out/dc * dc/dn = -dQ_out/dc * c/n
-        // Rough estimate: Q change ~ c * dt * spatial_gradient
         double n_val = to_double(reach.manning_n);
         double c_val = to_double(c);
         double Q_out = to_double(Q[n_nodes-1]);
-        double Q_mean = to_double(Q_ref);
+        double Q_in = to_double(Q_upstream);
         
-        // Sensitivity: increasing n -> slower c -> reduced advection -> delayed/reduced peak
-        analytical_dQ_dn_[reach.id] = -(Q_out - Q_mean) * (c_val / n_val) * (dt / reach.length);
+        // Sensitivity: increasing n -> slower wave -> lower Q_out during rising limb
+        // The gradient depends on the flow regime (rising vs falling limb)
+        // Approximate: dQ_out/dn ≈ -(Q_out/n) * (L/c) / (L/c + dt) 
+        double travel_time = reach.length / c_val;
+        double attenuation_factor = travel_time / (travel_time + dt);
+        analytical_dQ_dn_[reach.id] = -Q_out * attenuation_factor / n_val;
     }
 }
 
@@ -1294,56 +1385,44 @@ inline void DiffusiveWaveRouter::enable_gradients(bool enable) {
 }
 
 inline void DiffusiveWaveRouter::start_recording() {
-    if (!config_.enable_gradients) return;
+    if (!config_.enable_gradients || !AD_ENABLED) return;
+    
+    activate_tape();
     recording_ = true;
-    // Reset gradient accumulators
+    
+    // Register all parameters as inputs (same as MC router)
+    for (Real* param : network_.get_all_parameters()) {
+        register_input(*param);
+    }
+    
+    // Reset analytical gradient accumulators (kept for diagnostics)
     for (auto& [id, g] : analytical_dQ_dn_) g = 0.0;
 }
 
 inline void DiffusiveWaveRouter::stop_recording() {
+    // Don't deactivate tape yet - we need it active for gradient computation
     recording_ = false;
 }
 
 inline void DiffusiveWaveRouter::compute_gradients(const std::vector<int>& gauge_reaches,
                                                     const std::vector<double>& dL_dQ) {
-    // Use analytical gradients (AD through FD schemes is unreliable)
-    if (gauge_reaches.empty() || dL_dQ.empty()) return;
+    if (!AD_ENABLED || gauge_reaches.empty() || dL_dQ.empty()) return;
     
-    int outlet_id = gauge_reaches[0];
-    double dL_dQ_outlet = dL_dQ[0];
-    
-    // Propagate gradients upstream through network
-    auto topo_order = network_.topological_order();
-    std::unordered_map<int, double> downstream_factor;
-    downstream_factor[outlet_id] = 1.0;
-    
-    for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
-        int reach_id = *it;
-        
-        if (downstream_factor.count(reach_id) == 0) continue;
-        double factor = downstream_factor[reach_id];
-        
-        // Set gradient for this reach using analytical approximation
-        Reach& reach = network_.get_reach(reach_id);
-        if (analytical_dQ_dn_.count(reach_id)) {
-            reach.grad_manning_n = dL_dQ_outlet * factor * analytical_dQ_dn_[reach_id];
-        }
-        
-        // Propagate to upstream reaches with attenuation
-        double attenuation = 0.85;
-        if (reach.upstream_junction_id >= 0) {
-            try {
-                const Junction& junc = network_.get_junction(reach.upstream_junction_id);
-                for (int up_id : junc.upstream_reach_ids) {
-                    if (downstream_factor.count(up_id) == 0) {
-                        downstream_factor[up_id] = factor * attenuation;
-                    } else {
-                        downstream_factor[up_id] += factor * attenuation;
-                    }
-                }
-            } catch (...) {}
-        }
+    // Register outputs and seed with loss gradients
+    for (size_t i = 0; i < gauge_reaches.size(); ++i) {
+        Reach& reach = network_.get_reach(gauge_reaches[i]);
+        register_output(reach.outflow_curr);
+        set_gradient(reach.outflow_curr, dL_dQ[i]);
     }
+    
+    // Reverse pass
+    evaluate_tape();
+    
+    // Collect gradients from tape
+    network_.collect_gradients();
+    
+    // Deactivate the tape
+    deactivate_tape();
 }
 
 inline std::unordered_map<std::string, double> DiffusiveWaveRouter::get_gradients() const {
@@ -1361,6 +1440,7 @@ inline std::unordered_map<std::string, double> DiffusiveWaveRouter::get_gradient
 }
 
 inline void DiffusiveWaveRouter::reset_gradients() {
+    reset_tape();
     network_.zero_gradients();
     for (auto& [id, g] : analytical_dQ_dn_) g = 0.0;
 }

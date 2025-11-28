@@ -371,7 +371,9 @@ inline void DiffusiveWaveIFT::route_timestep() {
         // For stability: Cr_sub < 2, Df_sub < 1
         int num_substeps_cr = std::max(1, static_cast<int>(std::ceil(Cr / 1.5)));
         int num_substeps_df = std::max(1, static_cast<int>(std::ceil(Df / 0.8)));
-        int num_substeps = std::max(num_substeps_cr, num_substeps_df);
+        // CRITICAL: Cap substeps to prevent excessive computation
+        // With high Q and small dx, Cr can be 100+, causing freeze
+        int num_substeps = std::min(20, std::max(num_substeps_cr, num_substeps_df));
         double sub_dt = dt / num_substeps;
         
         // Sub-stepping loop
@@ -844,6 +846,7 @@ inline void SoftGatedKWT::route_timestep() {
     }
     
     current_time_ += dt;
+    ++timestep_count_;  // Track timestep count for gradient normalization
 }
 
 inline void SoftGatedKWT::route(int n) { for (int t = 0; t < n; ++t) route_timestep(); }
@@ -869,13 +872,19 @@ inline void SoftGatedKWT::reset_state() {
         r.outflow_prev = r.outflow_curr = Real(0.0);
     }
     current_time_ = 0.0;
+    timestep_count_ = 0;
 }
-inline void SoftGatedKWT::reset_gradients() { for (auto& [id, g] : grad_manning_n_) g = 0.0; network_.zero_gradients(); }
+inline void SoftGatedKWT::reset_gradients() { for (auto& [id, g] : grad_manning_n_) g = 0.0; network_.zero_gradients(); timestep_count_ = 0; }
 inline void SoftGatedKWT::compute_gradients(const std::vector<int>& gauge_reaches, const std::vector<double>& dL_dQ) {
     if (gauge_reaches.empty()) return;
+    
+    // Normalize accumulated gradients by timestep count
+    // This gives a time-averaged gradient comparable to other methods
+    double norm_factor = (timestep_count_ > 0) ? 1.0 / timestep_count_ : 1.0;
+    
     for (size_t i = 0; i < gauge_reaches.size(); ++i) {
         int id = gauge_reaches[i];
-        network_.get_reach(id).grad_manning_n = dL_dQ[i] * grad_manning_n_[id];
+        network_.get_reach(id).grad_manning_n = dL_dQ[i] * grad_manning_n_[id] * norm_factor;
     }
     // Propagate upstream
     auto topo = network_.topological_order();

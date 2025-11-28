@@ -1,0 +1,28 @@
+! =============================================================================
+! dMC-Route - Bow at Banff Domain
+! =============================================================================
+! Usage: ./dmc_route_run -c bow_at_banff.txt
+! =============================================================================
+
+! --- INPUT/OUTPUT FILES ---
+<fname_ntopo>           /Users/darrieythorsson/compHydro/data/CONFLUENCE_data/domain_Bow_at_Banff_distributed/settings/mizuRoute/topology.nc
+<fname_qsim>            /Users/darrieythorsson/compHydro/data/CONFLUENCE_data/domain_Bow_at_Banff_distributed/simulations/run_1/SUMMA/run_1_timestep.nc
+<fname_output>          discharge.csv
+<fname_jacobian>        jacobian.csv
+
+! --- SIMULATION OPTIONS ---
+<enable_gradients>      true
+<dt_routing>            3600
+<routing_method>        kwt ! options: muskingum, irf, diffusive, diffusive-ift, lag, kwt, kwt-soft
+
+! --- RUNOFF VARIABLE (SUMMA) ---
+<vname_qsim>            averageRoutedRunoff
+<units_qsim>            m/s
+<dt_qsim>               3600
+
+! --- DIMENSIONS ---
+<dname_time>            time
+<vname_time>            time
+<dname_hruid>           gru
+<vname_hruid>           gruId
+<vname_area>
