@@ -8,6 +8,8 @@
 #include <functional>
 #include <fstream>
 #include <cstring>
+#include <cmath>
+#include <iostream>
 
 namespace dmc {
 
@@ -38,9 +40,9 @@ struct RouterConfig {
     double irf_mask_steepness = 10.0;       // Sigmoid steepness for soft mask
     
     // === Diffusive Wave Options ===
-    int dw_num_nodes = 20;                  // Spatial nodes per reach - reduced from 50 for performance
+    int dw_num_nodes = 10;                  // Spatial nodes per reach - fewer = larger dx = more stable
     bool dw_use_ift_adjoint = true;        // Use Implicit Function Theorem for adjoints
-    int dw_max_substeps = 50;              // Maximum sub-steps per timestep (caps runtime)
+    int dw_max_substeps = 500;             // Maximum sub-steps per timestep (stability requires many)
     
     // === Soft-Gated KWT Options ===
     double kwt_gate_steepness = 5.0;       // Soft gate sharpness (lower = smoother gradients)
@@ -1117,8 +1119,11 @@ private:
     double current_time_ = 0.0;
     bool recording_ = false;
     
-    // Number of computational nodes per reach
+    // Number of computational nodes per reach (max/default)
     int nodes_per_reach_ = 10;
+    
+    // Actual node count per reach (adaptive based on reach length)
+    std::unordered_map<int, int> reach_nodes_;
     
     // State: Q at each node for each reach
     std::unordered_map<int, std::vector<Real>> Q_nodes_;
@@ -1150,13 +1155,50 @@ inline void DiffusiveWaveRouter::initialize_state() {
     Q_nodes_.clear();
     dw_params_.clear();
     analytical_dQ_dn_.clear();
+    reach_nodes_.clear();  // Store per-reach node count
+    
+    // Minimum dx for stability with explicit scheme
+    // With dt=3600s, c_max=5m/s, D_max=500m²/s, max_substeps=500:
+    // Need (Cr + 2*Df) / 500 <= 0.8, so Cr + 2*Df <= 400
+    // Cr = c*dt/dx = 5*3600/dx = 18000/dx  →  for Cr=200: dx = 90m
+    // Df = D*dt/dx² = 500*3600/dx² = 1.8e6/dx²  →  for Df=100: dx = 134m
+    // Use 500m to be safe (Cr=36, Df=7.2, stability=50 → needs ~63 substeps)
+    double dx_min = 500.0;  // meters
+    
+    std::cerr << "DW Node Count Adaptive Initialization:\n";
+    std::cerr << "  Minimum dx: " << dx_min << "m\n";
+    
+    int min_nodes_used = 1000;
+    int max_nodes_used = 0;
+    int short_reaches = 0;
     
     for (int reach_id : network_.topological_order()) {
-        Q_nodes_[reach_id] = std::vector<Real>(nodes_per_reach_, Real(0.0));
-        
         Reach& reach = network_.get_reach(reach_id);
+        
+        // Compute nodes needed for this reach (minimum 3 for numerical scheme)
+        int nodes = std::max(3, static_cast<int>(reach.length / dx_min) + 1);
+        // Cap at config value
+        nodes = std::min(nodes, nodes_per_reach_);
+        
+        // For very short reaches, use minimum nodes and accept coarse resolution
+        if (reach.length < dx_min * 2) {
+            nodes = 3;  // Minimum for 2nd order scheme
+            short_reaches++;
+        }
+        
+        reach_nodes_[reach_id] = nodes;
+        Q_nodes_[reach_id] = std::vector<Real>(nodes, Real(0.0));
+        
         dw_params_[reach_id] = {to_double(reach.manning_n), 1.0, 0.0};
         analytical_dQ_dn_[reach_id] = 0.0;
+        
+        min_nodes_used = std::min(min_nodes_used, nodes);
+        max_nodes_used = std::max(max_nodes_used, nodes);
+    }
+    
+    std::cerr << "  Nodes per reach: " << min_nodes_used << " - " << max_nodes_used << "\n";
+    if (short_reaches > 0) {
+        std::cerr << "  Short reaches (<" << dx_min*2 << "m): " << short_reaches << " (using 3 nodes)\n";
     }
 }
 
@@ -1196,12 +1238,13 @@ inline Real DiffusiveWaveRouter::compute_celerity(const Reach& reach, Real Q) {
     Real celerity = Real(5.0/3.0) * velocity;
     
     // Bounds for numerical stability (use smooth when AD enabled)
+    // Lower max for explicit scheme stability (5 m/s gives Cr=36 at dx=500m, dt=3600s)
     if (config_.enable_gradients && config_.use_smooth_bounds) {
         celerity = smooth_max(celerity, Real(0.1), config_.smooth_epsilon);
-        celerity = smooth_min(celerity, Real(5.0), config_.smooth_epsilon);
+        celerity = smooth_min(celerity, Real(3.0), config_.smooth_epsilon);  // Reduced from 5.0
     } else {
         celerity = safe_max(celerity, Real(0.1));
-        celerity = safe_min(celerity, Real(5.0));
+        celerity = safe_min(celerity, Real(3.0));  // Reduced from 5.0
     }
     
     return celerity;
@@ -1234,13 +1277,15 @@ inline Real DiffusiveWaveRouter::compute_diffusion_coef(const Reach& reach, Real
     Real D = Q / (Real(2.0) * width * slope);
     
     // Bounds for stability (use smooth when AD enabled)
-    // Max D ~2000 m²/s to prevent over-smoothing while allowing some diffusion
+    // With dx~500m, dt=3600s: Df = D * dt/dx² = D * 0.0144
+    // For Df < 0.5 (stability), need D < 35 m²/s without sub-stepping
+    // Allow up to 200 m²/s with sub-stepping (will require ~10-20 substeps)
     if (config_.enable_gradients && config_.use_smooth_bounds) {
-        D = smooth_max(D, Real(10.0), config_.smooth_epsilon);
-        D = smooth_min(D, Real(2000.0), config_.smooth_epsilon);
+        D = smooth_max(D, Real(1.0), config_.smooth_epsilon);
+        D = smooth_min(D, Real(200.0), config_.smooth_epsilon);  // Reduced from 500
     } else {
-        D = safe_max(D, Real(10.0));
-        D = safe_min(D, Real(2000.0));
+        D = safe_max(D, Real(1.0));
+        D = safe_min(D, Real(200.0));  // Reduced from 500
     }
     
     return D;
@@ -1248,7 +1293,7 @@ inline Real DiffusiveWaveRouter::compute_diffusion_coef(const Reach& reach, Real
 
 inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
     auto& Q = Q_nodes_[reach.id];
-    int n_nodes = nodes_per_reach_;
+    int n_nodes = reach_nodes_[reach.id];  // Use adaptive node count for this reach
     double dx = reach.length / (n_nodes - 1);
     double dt = config_.dt;
     
@@ -1262,6 +1307,18 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
                 Q_upstream = Q_upstream + up_reach.outflow_curr;
             }
         } catch (...) {}
+    }
+    
+    // For very short reaches, use instant routing (pass-through)
+    // This avoids numerical instability from tiny dx
+    if (reach.length < 200.0) {  // < 200m
+        reach.inflow_curr = Q_upstream + reach.lateral_inflow;
+        reach.outflow_curr = reach.inflow_curr;
+        // Fill Q_nodes uniformly for consistency
+        for (int i = 0; i < n_nodes; ++i) {
+            Q[i] = reach.outflow_curr;
+        }
+        return;
     }
     
     // Lateral inflow distributed as source term [m³/s per m of reach]
@@ -1295,12 +1352,43 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
     Real Df = D * Real(dt / (dx * dx));
     
     // Stability check and sub-stepping
-    // For AD safety, use fixed sub-step count if stability requires it
+    // For explicit scheme, need Cr + 2*Df <= 1 approximately
     double stability = to_double(Cr) + 2.0 * to_double(Df);
-    int sub_steps = std::max(1, static_cast<int>(stability / 0.9) + 1);
+    int sub_steps = std::max(1, static_cast<int>(stability / 0.8) + 1);
     
-    // Cap sub-steps to prevent extremely slow execution
-    sub_steps = std::min(sub_steps, config_.dw_max_substeps);
+    // One-time diagnostic for first reach
+    static bool printed_diagnostic = false;
+    if (!printed_diagnostic) {
+        std::cerr << "DW Stability Diagnostic (first reach):\n";
+        std::cerr << "  dx=" << dx << "m, dt=" << dt << "s\n";
+        std::cerr << "  c=" << to_double(c) << " m/s, D=" << to_double(D) << " m²/s\n";
+        std::cerr << "  Cr=" << to_double(Cr) << ", Df=" << to_double(Df) << "\n";
+        std::cerr << "  Stability number=" << stability << ", sub_steps=" << sub_steps << "\n";
+        printed_diagnostic = true;
+    }
+    
+    // Warn if excessive sub-stepping needed (but don't cap - stability is critical)
+    static bool warned_substeps = false;
+    if (!warned_substeps && sub_steps > 100) {
+        std::cerr << "WARNING: Diffusive Wave requires " << sub_steps 
+                  << " sub-steps for stability (Cr=" << to_double(Cr) 
+                  << ", Df=" << to_double(Df) << ")\n";
+        std::cerr << "  Consider using diffusive-ift method instead for better performance.\n";
+        warned_substeps = true;
+    }
+    
+    // Hard cap with instability warning
+    if (sub_steps > config_.dw_max_substeps) {
+        static bool warned_cap = false;
+        if (!warned_cap) {
+            std::cerr << "WARNING: DW sub-steps capped from " << sub_steps 
+                      << " to " << config_.dw_max_substeps 
+                      << " - results may be unstable (NaN)!\n";
+            std::cerr << "  Increase dw_max_substeps or use diffusive-ift method.\n";
+            warned_cap = true;
+        }
+        sub_steps = config_.dw_max_substeps;
+    }
     
     Real sub_dt = Real(dt / sub_steps);
     
@@ -1325,6 +1413,19 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
             
             // Update (no distributed source - lateral enters at upstream)
             Q[i] = Q_old[i] + advection + diffusion;
+            
+            // NaN detection and recovery
+            if (std::isnan(to_double(Q[i])) || std::isinf(to_double(Q[i]))) {
+                static bool warned_nan = false;
+                if (!warned_nan) {
+                    std::cerr << "WARNING: NaN/Inf detected in DW routing at node " << i 
+                              << " (substep " << s << "/" << sub_steps << ")\n";
+                    std::cerr << "  Cr=" << to_double(Cr) << ", Df=" << to_double(Df) << "\n";
+                    std::cerr << "  Recovering by using previous value.\n";
+                    warned_nan = true;
+                }
+                Q[i] = Q_old[i];
+            }
             
             // Ensure non-negative (use smooth version for AD)
             if (config_.enable_gradients && config_.use_smooth_bounds) {
