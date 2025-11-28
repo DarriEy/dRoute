@@ -1,0 +1,167 @@
+# dMC-Route Configuration File
+# ============================
+#
+# This file configures the differentiable Muskingum-Cunge routing model.
+# All paths are relative to the working directory unless absolute.
+
+# =============================================================================
+# Network Configuration
+# =============================================================================
+network:
+  # Path to river network file
+  # Supported formats: GeoJSON (.geojson, .json), CSV (.csv)
+  file: "data/network.geojson"
+  
+  # GeoJSON property names (for GeoJSON input)
+  properties:
+    reach_id: "COMID"           # NHDPlus: COMID, other: reach_id
+    length: "LENGTHKM"          # Reach length
+    slope: "SLOPE"              # Bed slope [m/m]
+    from_node: "FromNode"       # Upstream junction ID
+    to_node: "ToNode"           # Downstream junction ID
+    manning_n: ""               # Optional: per-reach Manning's n
+  
+  # Unit conversions
+  units:
+    length_to_meters: 1000.0    # Multiply length by this (km -> m)
+    slope_factor: 1.0           # Multiply slope by this
+  
+  # Default values when properties are missing
+  defaults:
+    slope: 0.001
+    manning_n: 0.035
+    length: 1000.0
+
+# =============================================================================
+# Forcing Configuration
+# =============================================================================
+forcing:
+  # Path to forcing file (lateral inflows from rainfall-runoff model)
+  # Supported formats: NetCDF (.nc), CSV (.csv)
+  file: "data/runoff.nc"
+  
+  # NetCDF variable names (for NetCDF input)
+  netcdf:
+    # Dimension names
+    time_dim: "time"
+    hru_dim: "hru"              # Could be "gru", "catchment", etc.
+    
+    # Variable names
+    time_var: "time"
+    hru_id_var: "hruId"
+    area_var: "HRUarea"         # HRU area for m/s -> m³/s conversion
+    
+    # Runoff variables (will be summed)
+    # For SUMMA output:
+    runoff_vars:
+      - "scalarSurfaceRunoff"   # Surface runoff [m/s]
+      - "scalarAquiferBaseflow" # Baseflow [m/s]
+    
+    # Alternative: direct flow variable (already in m³/s)
+    # If set, runoff_vars are ignored
+    direct_flow_var: ""         # e.g., "lateralFlow", "runoff_m3s"
+    
+    # Unit conversions
+    runoff_to_m_per_s: 1.0      # Multiply runoff by this to get m/s
+    area_to_m2: 1.0             # Multiply area by this to get m²
+    
+    # Time subsetting (optional)
+    start_index: 0              # First timestep to use
+    end_index: -1               # Last timestep (-1 = all)
+  
+  # HRU-to-reach mapping (optional)
+  # If not specified, assumes HRU IDs match reach IDs (identity mapping)
+  mapping_file: ""              # CSV with: reach_id, hru_id, weight
+
+# =============================================================================
+# Routing Configuration
+# =============================================================================
+routing:
+  # Timestep [seconds]
+  # If not specified, uses timestep from forcing file
+  timestep: 3600.0              # 1 hour
+  
+  # Muskingum-Cunge parameters
+  muskingum:
+    x_lower_bound: 0.0          # Minimum X value
+    x_upper_bound: 0.5          # Maximum X value (0.5 = kinematic wave)
+    min_flow: 1.0e-6            # Minimum flow to prevent division by zero
+  
+  # Adaptive substepping (for numerical stability)
+  adaptive:
+    enabled: false
+    max_substeps: 10
+    courant_target: 0.9
+
+# =============================================================================
+# Channel Geometry (Global Defaults)
+# =============================================================================
+# Power-law relationships: Width = a * Q^b, Depth = c * Q^d
+# Based on Leopold & Maddock (1953) at-a-station hydraulic geometry
+geometry:
+  width_coef: 7.2               # a
+  width_exp: 0.5                # b
+  depth_coef: 0.27              # c
+  depth_exp: 0.3                # d
+
+# =============================================================================
+# Automatic Differentiation
+# =============================================================================
+differentiation:
+  enabled: true                 # Enable gradient computation
+  mode: "reverse"               # "reverse" (many params) or "forward" (few params)
+  
+  # Parameters to compute gradients for
+  parameters:
+    - "manning_n"
+    - "width_coef"
+    # - "width_exp"
+    # - "depth_coef"
+    # - "depth_exp"
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output:
+  # Output file for discharge time series
+  discharge_file: "output/discharge.csv"
+  
+  # Output file for state variables (optional)
+  state_file: ""                # "output/state.nc"
+  
+  # Gauge reaches (reach IDs to output)
+  # If empty, outputs all reaches
+  gauge_reaches: []             # e.g., [12345, 12346, 12347]
+  
+  # Output interval (1 = every timestep)
+  interval: 1
+  
+  # Save gradients to file
+  gradient_file: ""             # "output/gradients.csv"
+
+# =============================================================================
+# Example CSV Formats
+# =============================================================================
+#
+# Network CSV (reaches.csv):
+# reach_id,length_m,slope,from_node,to_node,manning_n
+# 1,5000,0.001,0,1,0.035
+# 2,3000,0.002,1,2,0.040
+# 3,4000,0.0015,-1,1,0.035
+#
+# Parameters CSV (params.csv):
+# reach_id,manning_n,width_coef,width_exp,depth_coef,depth_exp
+# 1,0.035,7.2,0.5,0.27,0.3
+# 2,0.040,8.0,0.5,0.30,0.3
+#
+# HRU-Reach Mapping CSV (mapping.csv):
+# reach_id,hru_id,weight
+# 1,101,1.0
+# 1,102,0.5
+# 2,103,1.0
+#
+# Forcing CSV (forcing.csv):
+# time,1,2,3
+# 0,0.5,0.3,0.4
+# 3600,1.2,0.8,1.0
+# 7200,2.5,1.5,2.0

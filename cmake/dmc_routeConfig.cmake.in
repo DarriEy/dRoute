@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/dmc_routeTargets.cmake" OPTIONAL)
+
+set(DMC_ROUTE_INCLUDE_DIRS "@PACKAGE_INCLUDE_INSTALL_DIR@")
+set(DMC_ROUTE_LIBRARIES dmc_route)
+
+check_required_components(dmc_route)

@@ -1,0 +1,61 @@
+! =============================================================================
+! dMC-Route Control File Template
+! =============================================================================
+! Usage: ./dmc_route_run -c config.txt
+!
+! All file paths and simulation options can be specified here.
+! Command line arguments override config file values if both provided.
+! =============================================================================
+
+! --- INPUT/OUTPUT FILES ---
+! Uncomment and edit these lines:
+! <fname_ntopo>         /path/to/topology.nc           ! Network topology file
+! <fname_qsim>          /path/to/runoff.nc             ! Runoff forcing file
+! <fname_output>        discharge.csv                   ! Output discharge CSV
+! <fname_jacobian>      jacobian.csv                    ! Jacobian output (optional)
+
+! --- SIMULATION OPTIONS ---
+! <enable_gradients>    false                           ! true/false for AD gradients
+! <dt_routing>          3600                            ! Routing timestep [seconds]
+! <routing_method>      muskingum                       ! muskingum, irf, diffusive, lag, kwt
+
+! --- RUNOFF VARIABLE ---
+<vname_qsim>            averageRoutedRunoff    ! Variable name for runoff in NetCDF
+<units_qsim>            m/s                     ! Units: m/s, m3/s, mm/h, mm/d
+<dt_qsim>               3600                    ! Time interval of runoff [seconds]
+
+! --- TIME DIMENSION ---
+<dname_time>            time                    ! Dimension name for time
+<vname_time>            time                    ! Variable name for time
+
+! --- HRU/GRU DIMENSION ---
+<dname_hruid>           gru                     ! Dimension name: gru, hru, catchment
+<vname_hruid>           gruId                   ! Variable name for HRU/GRU IDs
+
+! --- OPTIONAL: AREA VARIABLE ---
+! If units are depth-based (m/s, mm/d), areas are needed.
+! Leave empty to use areas from topology.nc
+<vname_area>                                    ! Area variable name (empty = from topology)
+
+! =============================================================================
+! USAGE EXAMPLES
+! =============================================================================
+!
+! Run with just config file (all options inside):
+!   ./dmc_route_run -c config.txt
+!
+! Config file + command line overrides:
+!   ./dmc_route_run -c config.txt -j my_jacobian.csv
+!   ./dmc_route_run -c config.txt -o different_output.csv
+!
+! Mix of config and CLI for flexibility:
+!   ./dmc_route_run -n topology.nc -f forcing.nc -c config.txt
+!
+! =============================================================================
+! PRESET CONFIGURATIONS (alternative to config file)
+! =============================================================================
+! Instead of this file, you can use -p/--preset:
+!   -p summa  : averageRoutedRunoff [m/s], gru dimension
+!   -p fuse   : q_routed [mm/d], gru dimension
+!   -p gr4j   : q_routed [mm/d], gru dimension
+! =============================================================================
