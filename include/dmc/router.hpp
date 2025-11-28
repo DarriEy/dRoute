@@ -57,6 +57,97 @@ struct RouterConfig {
     // === Parallelization ===
     bool parallel_routing = false;         // Enable OpenMP parallel routing
     int num_threads = 4;                   // Thread count for parallel mode
+    
+    /**
+     * Load RouterConfig from a mizuRoute-style control file.
+     * Supports tags like <dt_routing>, <irf_shape_param>, etc.
+     */
+    static RouterConfig load_from_control_file(const std::string& filepath) {
+        RouterConfig cfg;
+        
+        std::ifstream file(filepath);
+        if (!file.is_open()) {
+            std::cerr << "Warning: Cannot open config file: " << filepath << ", using defaults\n";
+            return cfg;
+        }
+        
+        std::string line;
+        while (std::getline(file, line)) {
+            // Skip empty lines and comments
+            if (line.empty() || line[0] == '!') continue;
+            
+            // Parse <tag> value format
+            size_t tag_start = line.find('<');
+            size_t tag_end = line.find('>');
+            if (tag_start == std::string::npos || tag_end == std::string::npos) continue;
+            
+            std::string tag = line.substr(tag_start + 1, tag_end - tag_start - 1);
+            
+            // Extract value (everything after '>' until '!' or end)
+            std::string rest = line.substr(tag_end + 1);
+            size_t comment_pos = rest.find('!');
+            if (comment_pos != std::string::npos) {
+                rest = rest.substr(0, comment_pos);
+            }
+            
+            // Trim whitespace
+            size_t start = rest.find_first_not_of(" \t");
+            size_t end_pos = rest.find_last_not_of(" \t");
+            if (start == std::string::npos) continue;
+            std::string value = rest.substr(start, end_pos - start + 1);
+            
+            // Parse boolean helper
+            auto parse_bool = [](const std::string& v) {
+                return v == "true" || v == "yes" || v == "1" || v == "True" || v == "TRUE";
+            };
+            
+            // Core options
+            if (tag == "dt_routing" || tag == "dt") cfg.dt = std::stod(value);
+            else if (tag == "enable_gradients") cfg.enable_gradients = parse_bool(value);
+            else if (tag == "min_flow") cfg.min_flow = std::stod(value);
+            
+            // Muskingum bounds
+            else if (tag == "x_lower_bound") cfg.x_lower_bound = std::stod(value);
+            else if (tag == "x_upper_bound") cfg.x_upper_bound = std::stod(value);
+            
+            // AD safety
+            else if (tag == "use_smooth_bounds") cfg.use_smooth_bounds = parse_bool(value);
+            else if (tag == "smooth_epsilon") cfg.smooth_epsilon = std::stod(value);
+            
+            // Sub-stepping
+            else if (tag == "fixed_substepping") cfg.fixed_substepping = parse_bool(value);
+            else if (tag == "num_substeps" || tag == "mc_num_substeps") cfg.num_substeps = std::stoi(value);
+            else if (tag == "adaptive_substepping") cfg.adaptive_substepping = parse_bool(value);
+            else if (tag == "max_substeps") cfg.max_substeps = std::stoi(value);
+            
+            // IRF options
+            else if (tag == "irf_max_kernel_size") cfg.irf_max_kernel_size = std::stoi(value);
+            else if (tag == "irf_shape_param") cfg.irf_shape_param = std::stod(value);
+            else if (tag == "irf_soft_mask") cfg.irf_soft_mask = parse_bool(value);
+            else if (tag == "irf_mask_steepness") cfg.irf_mask_steepness = std::stod(value);
+            
+            // Diffusive Wave options
+            else if (tag == "dw_num_nodes") cfg.dw_num_nodes = std::stoi(value);
+            else if (tag == "dw_use_ift_adjoint") cfg.dw_use_ift_adjoint = parse_bool(value);
+            else if (tag == "dw_max_substeps") cfg.dw_max_substeps = std::stoi(value);
+            
+            // KWT options
+            else if (tag == "kwt_gate_steepness") cfg.kwt_gate_steepness = std::stod(value);
+            else if (tag == "kwt_anneal_steepness") cfg.kwt_anneal_steepness = parse_bool(value);
+            else if (tag == "kwt_steepness_min") cfg.kwt_steepness_min = std::stod(value);
+            else if (tag == "kwt_steepness_max") cfg.kwt_steepness_max = std::stod(value);
+            
+            // Memory management
+            else if (tag == "enable_checkpointing") cfg.enable_checkpointing = parse_bool(value);
+            else if (tag == "checkpoint_interval") cfg.checkpoint_interval = std::stoi(value);
+            
+            // Parallelization
+            else if (tag == "parallel_routing") cfg.parallel_routing = parse_bool(value);
+            else if (tag == "num_threads") cfg.num_threads = std::stoi(value);
+        }
+        
+        return cfg;
+    }
 };
 
 /**

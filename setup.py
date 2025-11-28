@@ -19,7 +19,7 @@ import sys
 import subprocess
 from pathlib import Path
 
-from setuptools import setup, Extension, find_packages
+from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
 
@@ -89,13 +89,14 @@ setup(
     description="Differentiable river routing library for hydrological modeling",
     long_description=long_description,
     long_description_content_type="text/markdown",
+    license="MIT",
     url="https://github.com/your-org/dmc-route",
     
     ext_modules=[CMakeExtension("pydmc_route")],
     cmdclass={"build_ext": CMakeBuild},
     
-    packages=find_packages(where="python"),
-    package_dir={"": "python"},
+    # No Python packages - this is a pure C++ extension
+    packages=[],
     
     python_requires=">=3.8",
     install_requires=[
@@ -114,7 +115,6 @@ setup(
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Science/Research",
-        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",

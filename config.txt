@@ -1,7 +1,7 @@
 ! =============================================================================
-! dMC-Route - Bow at Banff Domain
+! dMC-Route Configuration - Bow at Banff Domain
 ! =============================================================================
-! Usage: ./dmc_route_run -c bow_at_banff.txt
+! Usage: ./dmc_route_run -c config.txt
 ! =============================================================================
 
 ! --- INPUT/OUTPUT FILES ---
@@ -10,19 +10,78 @@
 <fname_output>          discharge.csv
 <fname_jacobian>        jacobian.csv
 
-! --- SIMULATION OPTIONS ---
+! --- CORE SIMULATION OPTIONS ---
 <enable_gradients>      true
 <dt_routing>            3600
-<routing_method>        muskingum ! options: muskingum, irf, diffusive, diffusive-ift, lag, kwt, kwt-soft
+<routing_method>        irf                 ! options: muskingum, irf, diffusive, diffusive-ift, lag, kwt, kwt-soft
+<min_flow>              1e-6                ! minimum flow threshold [m³/s]
 
 ! --- RUNOFF VARIABLE (SUMMA) ---
 <vname_qsim>            averageRoutedRunoff
 <units_qsim>            m/s
 <dt_qsim>               3600
-
-! --- DIMENSIONS ---
 <dname_time>            time
 <vname_time>            time
 <dname_hruid>           gru
 <vname_hruid>           gruId
 <vname_area>
+
+! =============================================================================
+! METHOD-SPECIFIC OPTIONS
+! =============================================================================
+
+! --- MUSKINGUM-CUNGE OPTIONS ---
+<x_lower_bound>         0.0                 ! Lower bound for Muskingum X parameter
+<x_upper_bound>         0.5                 ! Upper bound for Muskingum X parameter
+<num_substeps>          4                   ! Number of substeps per timestep
+<fixed_substepping>     true                ! Use fixed substeps (required for AD)
+
+! --- IRF (IMPULSE RESPONSE FUNCTION) OPTIONS ---
+<irf_shape_param>       2.5                 ! Gamma distribution shape parameter (k)
+<irf_max_kernel_size>   500                 ! Maximum kernel length [timesteps]
+<irf_soft_mask>         true                ! Use sigmoid masking (required for AD)
+<irf_mask_steepness>    10.0                ! Sigmoid steepness for soft mask
+
+! --- DIFFUSIVE WAVE OPTIONS ---
+<dw_num_nodes>          10                  ! Spatial nodes per reach (fewer = more stable)
+<dw_max_substeps>       500                 ! Maximum sub-steps for explicit scheme
+<dw_use_ift_adjoint>    true                ! Use IFT for adjoints (diffusive-ift method)
+
+! --- KWT (KINEMATIC WAVE TRACKING) OPTIONS ---
+<kwt_gate_steepness>    5.0                 ! Soft gate sharpness (kwt-soft method)
+<kwt_anneal_steepness>  false               ! Anneal steepness during training
+<kwt_steepness_min>     1.0                 ! Starting steepness (blurry)
+<kwt_steepness_max>     20.0                ! Ending steepness (sharp)
+
+! =============================================================================
+! ADVANCED OPTIONS
+! =============================================================================
+
+! --- AD SAFETY OPTIONS ---
+<use_smooth_bounds>     true                ! Use smooth clamp/max/min for AD
+<smooth_epsilon>        1e-6                ! Epsilon for smooth functions
+
+! --- MEMORY MANAGEMENT ---
+<enable_checkpointing>  false               ! Checkpoint for long simulations
+<checkpoint_interval>   1000                ! Timesteps between checkpoints
+
+! --- PARALLELIZATION ---
+<parallel_routing>      false               ! Enable OpenMP parallel routing
+<num_threads>           4                   ! Thread count for parallel mode
+
+! =============================================================================
+! METHOD RECOMMENDATIONS
+! =============================================================================
+! 
+! For calibration/optimization (need gradients):
+!   - muskingum    : General purpose, good mass balance, full AD
+!   - irf          : Fast, good for gamma-distributed travel times
+!   - diffusive-ift: Implicit solver, stable, exact adjoints via IFT
+!   - kwt-soft     : Lagrangian, smooth gradients, good for fast rivers
+!
+! For simulation only (no gradients needed):
+!   - lag          : Simple delay, very fast
+!   - kwt          : Standard kinematic wave tracking
+!   - diffusive    : Explicit diffusive wave (may need many substeps)
+!
+! =============================================================================

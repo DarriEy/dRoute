@@ -7,7 +7,7 @@ A differentiable routing library for hydrological modeling and machine learning 
 | Method | Gradients | Speed | Use Case |
 |--------|-----------|-------|----------|
 | Muskingum-Cunge | Full AD (5 params) | Fast | Production calibration |
-| IRF | Full AD (soft-masked) | Fast | Fast calibration |
+| IRF | Full AD (soft-masked) | Medum | Calibration |
 | Diffusive Wave | Analytical | Medium | High-accuracy physics |
 | Diffusive-IFT | Exact (IFT) | Medium | Exact gradients needed |
 | Lag | Analytical (weak) | Fast | Baseline only |
