@@ -1,4 +1,4 @@
-# dMC-Route: Differentiable River Routing Library
+# dRoute: Differentiable River Routing Library
 
 A high-performance, differentiable routing library for hydrological modeling and machine learning applications. Implements multiple routing methods with automatic differentiation support via CoDiPack.
 
