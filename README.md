@@ -126,7 +126,7 @@ grads = network.get_grad_manning_n_all()
 import torch
 import pydmc_route as dmc
 
-class DMCRoutingLayer(torch.nn.Module):
+class dRoutingLayer(torch.nn.Module):
     def __init__(self, num_reaches, ...):
         super().__init__()
         self.network = dmc.Network()
@@ -136,7 +136,7 @@ class DMCRoutingLayer(torch.nn.Module):
     
     def forward(self, lateral_inflows):
         # Forward pass through C++ router
-        # Gradients are computed by dMC-Route and transferred to PyTorch
+        # Gradients are computed by dRoute and transferred to PyTorch
         ...
 ```
 
@@ -147,9 +147,7 @@ See `examples/pytorch_routing.py` for complete example.
 The Muskingum-Cunge router supports gradients for:
 - `manning_n`: Manning's roughness coefficient
 - `width_coef`: Width coefficient (W = a × Q^b)
-- `width_exp`: Width exponent
 - `depth_coef`: Depth coefficient (D = c × Q^d)
-- `depth_exp`: Depth exponent
 
 ## CMake Options
 
