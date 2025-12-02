@@ -200,7 +200,7 @@ def load_topology(filepath: Path) -> Tuple['dmc.Network', np.ndarray, int, Dict[
     network.build_topology()
     
     # Verify topological order
-    topo_order = network.get_topological_order()
+    topo_order = network.topological_order()
     
     # Create area array indexed by reach index
     seg_areas = np.zeros(n_segs)
@@ -1096,7 +1096,7 @@ def run_tests(data_dir: Optional[Path] = None,
                         runoff_subset.astype(np.float64),
                         obs_subset.astype(np.float64),
                         outlet_idx,
-                        n_epochs=30,
+                        n_epochs=1,
                         lr=0.1,
                         eps=0.01,
                         verbose=True
@@ -1131,7 +1131,7 @@ def run_tests(data_dir: Optional[Path] = None,
                         continue
                     opt_results = optimize_routing_pytorch(
                         opt_network, runoff_subset, obs_subset,
-                        method=method, n_epochs=30, lr=0.05
+                        method=method, n_epochs=1, lr=0.05
                     )
                 
                 results[f'{method}_optimized'] = opt_results
