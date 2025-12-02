@@ -46,9 +46,6 @@ env/
 routing_comparison_*.png
 optimization_*.png
 
-# Data (user should add their own)
-data/
-
 # Temporary files
 *.tmp
 *.temp
