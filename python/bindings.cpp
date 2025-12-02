@@ -36,6 +36,7 @@
  #include <dmc/advanced_routing.hpp>
  #include <dmc/network.hpp>
  #include <dmc/network_io.hpp>
+ #include <dmc/unified_router.hpp>
  
  namespace py = pybind11;
  using namespace dmc;
@@ -577,6 +578,375 @@
              "Set soft gate steepness (for annealing)")
          .def("get_steepness", &SoftGatedKWT::get_steepness,
              "Get current soft gate steepness");
+ 
+     // =========================================================================
+     // Enzyme Kernels (Fast, AD-compatible)
+     // =========================================================================
+     
+     py::module_ enzyme = m.def_submodule("enzyme", "Fast Enzyme-compatible routing kernels");
+     
+     // EnzymeRouter: High-performance router using flat-array kernels
+     py::class_<EnzymeRouter>(enzyme, "EnzymeRouter",
+         R"pbdoc(
+         High-performance router using Enzyme-compatible flat-array kernels.
+         
+         This router is optimized for speed and can be used with numerical
+         differentiation or (when compiled with Enzyme) automatic differentiation.
+         
+         Example:
+             >>> router = dmc.enzyme.EnzymeRouter(network)
+             >>> router.set_lateral_inflows(runoff)
+             >>> router.route_timestep()
+             >>> Q = router.get_discharges()
+         )pbdoc")
+         .def(py::init([](Network& network, double dt, int num_substeps) {
+             UnifiedRouterConfig config;
+             config.dt = dt;
+             config.num_substeps = num_substeps;
+             return new EnzymeRouter(network, config);
+         }),
+             py::arg("network"),
+             py::arg("dt") = 3600.0,
+             py::arg("num_substeps") = 4,
+             "Create EnzymeRouter from network")
+         
+         .def("route_timestep", &EnzymeRouter::route_timestep,
+             "Route one timestep using Muskingum-Cunge kernel")
+         
+         .def("route", &EnzymeRouter::route, py::arg("num_timesteps"),
+             "Route multiple timesteps")
+         
+         .def("set_lateral_inflow", &EnzymeRouter::set_lateral_inflow,
+             py::arg("reach_id"), py::arg("inflow"),
+             "Set lateral inflow for a single reach")
+         
+         .def("set_lateral_inflows", [](EnzymeRouter& router, py::array_t<double> inflows) {
+             auto buf = inflows.request();
+             if (buf.ndim != 1) throw std::runtime_error("Expected 1D array");
+             double* ptr = static_cast<double*>(buf.ptr);
+             for (size_t i = 0; i < static_cast<size_t>(buf.size); ++i) {
+                 router.set_lateral_inflow(static_cast<int>(i), ptr[i]);
+             }
+         }, py::arg("inflows"), "Set lateral inflows from numpy array")
+         
+         .def("get_discharge", &EnzymeRouter::get_discharge, py::arg("reach_id"),
+             "Get discharge at a reach")
+         
+         .def("get_discharges", [](EnzymeRouter& router) {
+             auto discharges = router.get_all_discharges();
+             return py::array_t<double>(discharges.size(), discharges.data());
+         }, "Get all discharges as numpy array")
+         
+         .def("reset_state", &EnzymeRouter::reset_state,
+             "Reset router state to initial conditions")
+         
+         .def("set_manning_n", &EnzymeRouter::set_manning_n,
+             py::arg("reach_id"), py::arg("manning_n"),
+             "Set Manning's n for a reach")
+         
+         .def("set_manning_n_all", [](EnzymeRouter& router, py::array_t<double> values) {
+             auto buf = values.request();
+             if (buf.ndim != 1) throw std::runtime_error("Expected 1D array");
+             double* ptr = static_cast<double*>(buf.ptr);
+             for (size_t i = 0; i < static_cast<size_t>(buf.size); ++i) {
+                 router.set_manning_n(static_cast<int>(i), ptr[i]);
+             }
+         }, py::arg("manning_n"), "Set Manning's n for all reaches from numpy array")
+         
+         .def("get_manning_n_all", [](EnzymeRouter& router) {
+             auto values = router.get_manning_n_all();
+             return py::array_t<double>(values.size(), values.data());
+         }, "Get Manning's n for all reaches as numpy array")
+         
+         .def_property_readonly("num_reaches", &EnzymeRouter::num_reaches,
+             "Number of reaches in network")
+         
+         .def_property_readonly("dt", &EnzymeRouter::dt,
+             "Timestep in seconds");
+     
+     // Compute numerical gradients
+     enzyme.def("compute_gradients_numerical", [](
+         EnzymeRouter& router,
+         py::array_t<double> runoff,
+         py::array_t<double> observed,
+         int outlet_reach,
+         double eps
+     ) {
+         auto runoff_buf = runoff.request();
+         auto obs_buf = observed.request();
+         
+         if (runoff_buf.ndim != 2) throw std::runtime_error("runoff must be 2D (timesteps x reaches)");
+         if (obs_buf.ndim != 1) throw std::runtime_error("observed must be 1D");
+         
+         int n_timesteps = runoff_buf.shape[0];
+         int n_reaches = runoff_buf.shape[1];
+         double* runoff_ptr = static_cast<double*>(runoff_buf.ptr);
+         double* obs_ptr = static_cast<double*>(obs_buf.ptr);
+         
+         // Lambda to run simulation and compute MSE loss
+         auto run_and_loss = [&](EnzymeRouter& r) -> double {
+             r.reset_state();
+             double mse = 0.0;
+             for (int t = 0; t < n_timesteps; ++t) {
+                 for (int i = 0; i < n_reaches; ++i) {
+                     r.set_lateral_inflow(i, runoff_ptr[t * n_reaches + i]);
+                 }
+                 r.route_timestep();
+                 double sim = r.get_discharge(outlet_reach);
+                 double diff = sim - obs_ptr[t];
+                 mse += diff * diff;
+             }
+             return mse / n_timesteps;
+         };
+         
+         // Get current Manning's n values
+         auto manning_n = router.get_manning_n_all();
+         
+         // Compute base loss
+         double base_loss = run_and_loss(router);
+         
+         // Compute gradients via central differences
+         std::vector<double> gradients(n_reaches);
+         for (int i = 0; i < n_reaches; ++i) {
+             double orig = manning_n[i];
+             double h = eps * std::max(std::abs(orig), 0.001);
+             
+             // Forward perturbation
+             router.set_manning_n(i, orig + h);
+             double loss_plus = run_and_loss(router);
+             
+             // Backward perturbation  
+             router.set_manning_n(i, orig - h);
+             double loss_minus = run_and_loss(router);
+             
+             // Central difference
+             gradients[i] = (loss_plus - loss_minus) / (2 * h);
+             
+             // Restore
+             router.set_manning_n(i, orig);
+         }
+         
+         // Return gradients and base loss
+         py::dict result;
+         result["gradients"] = py::array_t<double>(gradients.size(), gradients.data());
+         result["loss"] = base_loss;
+         return result;
+     },
+     py::arg("router"),
+     py::arg("runoff"),
+     py::arg("observed"),
+     py::arg("outlet_reach"),
+     py::arg("eps") = 0.001,
+     R"pbdoc(
+         Compute gradients of MSE loss w.r.t. Manning's n using numerical differentiation.
+         
+         This is fast because it uses the Enzyme kernels (no AD tape overhead).
+         
+         Args:
+             router: EnzymeRouter instance
+             runoff: Lateral inflows array (n_timesteps, n_reaches)
+             observed: Observed discharge at outlet (n_timesteps,)
+             outlet_reach: Index of outlet reach
+             eps: Perturbation size for finite differences
+             
+         Returns:
+             dict with 'gradients' (numpy array) and 'loss' (float)
+     )pbdoc");
+     
+     // Run simulation and return timeseries
+     enzyme.def("simulate", [](
+         EnzymeRouter& router,
+         py::array_t<double> runoff,
+         int outlet_reach
+     ) {
+         auto runoff_buf = runoff.request();
+         if (runoff_buf.ndim != 2) throw std::runtime_error("runoff must be 2D (timesteps x reaches)");
+         
+         int n_timesteps = runoff_buf.shape[0];
+         int n_reaches = runoff_buf.shape[1];
+         double* runoff_ptr = static_cast<double*>(runoff_buf.ptr);
+         
+         router.reset_state();
+         std::vector<double> outlet_Q(n_timesteps);
+         
+         for (int t = 0; t < n_timesteps; ++t) {
+             for (int i = 0; i < n_reaches; ++i) {
+                 router.set_lateral_inflow(i, runoff_ptr[t * n_reaches + i]);
+             }
+             router.route_timestep();
+             outlet_Q[t] = router.get_discharge(outlet_reach);
+         }
+         
+         return py::array_t<double>(outlet_Q.size(), outlet_Q.data());
+     },
+     py::arg("router"),
+     py::arg("runoff"),
+     py::arg("outlet_reach"),
+     "Run simulation and return outlet discharge timeseries");
+     
+     // Optimize using gradient descent
+     enzyme.def("optimize", [](
+         EnzymeRouter& router,
+         py::array_t<double> runoff,
+         py::array_t<double> observed,
+         int outlet_reach,
+         int n_epochs,
+         double lr,
+         double eps,
+         bool verbose
+     ) {
+         auto runoff_buf = runoff.request();
+         auto obs_buf = observed.request();
+         
+         if (runoff_buf.ndim != 2) throw std::runtime_error("runoff must be 2D");
+         if (obs_buf.ndim != 1) throw std::runtime_error("observed must be 1D");
+         
+         int n_timesteps = runoff_buf.shape[0];
+         int n_reaches = runoff_buf.shape[1];
+         double* runoff_ptr = static_cast<double*>(runoff_buf.ptr);
+         double* obs_ptr = static_cast<double*>(obs_buf.ptr);
+         
+         // Get initial parameters in log space
+         auto manning_n = router.get_manning_n_all();
+         std::vector<double> log_n(n_reaches);
+         for (int i = 0; i < n_reaches; ++i) {
+             log_n[i] = std::log(manning_n[i]);
+         }
+         
+         // Lambda to run simulation and compute MSE loss
+         auto run_and_loss = [&]() -> std::pair<double, std::vector<double>> {
+             // Set current parameters
+             for (int i = 0; i < n_reaches; ++i) {
+                 router.set_manning_n(i, std::exp(log_n[i]));
+             }
+             
+             router.reset_state();
+             std::vector<double> sim(n_timesteps);
+             for (int t = 0; t < n_timesteps; ++t) {
+                 for (int i = 0; i < n_reaches; ++i) {
+                     router.set_lateral_inflow(i, runoff_ptr[t * n_reaches + i]);
+                 }
+                 router.route_timestep();
+                 sim[t] = router.get_discharge(outlet_reach);
+             }
+             
+             double mse = 0.0;
+             for (int t = 0; t < n_timesteps; ++t) {
+                 double diff = sim[t] - obs_ptr[t];
+                 mse += diff * diff;
+             }
+             return {mse / n_timesteps, sim};
+         };
+         
+         // Optimization loop
+         std::vector<double> losses;
+         
+         for (int epoch = 0; epoch < n_epochs; ++epoch) {
+             // Compute gradients via finite differences in log space
+             std::vector<double> grad(n_reaches, 0.0);
+             auto [base_loss, _] = run_and_loss();
+             losses.push_back(base_loss);
+             
+             for (int i = 0; i < n_reaches; ++i) {
+                 double orig = log_n[i];
+                 double h = eps;
+                 
+                 log_n[i] = orig + h;
+                 auto [loss_plus, __] = run_and_loss();
+                 
+                 log_n[i] = orig - h;
+                 auto [loss_minus, ___] = run_and_loss();
+                 
+                 grad[i] = (loss_plus - loss_minus) / (2 * h);
+                 log_n[i] = orig;
+             }
+             
+             // Gradient descent update
+             for (int i = 0; i < n_reaches; ++i) {
+                 log_n[i] -= lr * grad[i];
+                 // Clip to reasonable range
+                 log_n[i] = std::max(std::log(0.01), std::min(std::log(0.2), log_n[i]));
+             }
+             
+             if (verbose && ((epoch + 1) % 5 == 0 || epoch == 0)) {
+                 // Compute NSE for reporting
+                 auto [loss, sim] = run_and_loss();
+                 double obs_mean = 0.0;
+                 for (int t = 0; t < n_timesteps; ++t) obs_mean += obs_ptr[t];
+                 obs_mean /= n_timesteps;
+                 
+                 double ss_res = 0.0, ss_tot = 0.0;
+                 for (int t = 0; t < n_timesteps; ++t) {
+                     ss_res += (sim[t] - obs_ptr[t]) * (sim[t] - obs_ptr[t]);
+                     ss_tot += (obs_ptr[t] - obs_mean) * (obs_ptr[t] - obs_mean);
+                 }
+                 double nse = 1.0 - ss_res / ss_tot;
+                 
+                 std::cerr << "  Epoch " << (epoch + 1) << "/" << n_epochs 
+                          << ": MSE = " << loss << ", NSE = " << nse << std::endl;
+             }
+         }
+         
+         // Final simulation
+         for (int i = 0; i < n_reaches; ++i) {
+             router.set_manning_n(i, std::exp(log_n[i]));
+         }
+         auto [final_loss, final_sim] = run_and_loss();
+         
+         // Compute final metrics
+         double obs_mean = 0.0;
+         for (int t = 0; t < n_timesteps; ++t) obs_mean += obs_ptr[t];
+         obs_mean /= n_timesteps;
+         
+         double ss_res = 0.0, ss_tot = 0.0;
+         for (int t = 0; t < n_timesteps; ++t) {
+             ss_res += (final_sim[t] - obs_ptr[t]) * (final_sim[t] - obs_ptr[t]);
+             ss_tot += (obs_ptr[t] - obs_mean) * (obs_ptr[t] - obs_mean);
+         }
+         double nse = 1.0 - ss_res / ss_tot;
+         
+         // Return results
+         py::dict result;
+         result["simulated"] = py::array_t<double>(final_sim.size(), final_sim.data());
+         result["losses"] = py::array_t<double>(losses.size(), losses.data());
+         result["nse"] = nse;
+         result["final_loss"] = final_loss;
+         
+         std::vector<double> final_manning(n_reaches);
+         for (int i = 0; i < n_reaches; ++i) {
+             final_manning[i] = std::exp(log_n[i]);
+         }
+         result["optimized_manning_n"] = py::array_t<double>(final_manning.size(), final_manning.data());
+         
+         return result;
+     },
+     py::arg("router"),
+     py::arg("runoff"),
+     py::arg("observed"),
+     py::arg("outlet_reach"),
+     py::arg("n_epochs") = 30,
+     py::arg("lr") = 0.1,
+     py::arg("eps") = 0.01,
+     py::arg("verbose") = true,
+     R"pbdoc(
+         Optimize Manning's n using gradient descent with numerical gradients.
+         
+         This is much faster than CoDiPack-based optimization because it uses
+         the fast Enzyme kernels without AD tape overhead.
+         
+         Args:
+             router: EnzymeRouter instance
+             runoff: Lateral inflows (n_timesteps, n_reaches)
+             observed: Observed discharge at outlet (n_timesteps,)
+             outlet_reach: Index of outlet reach
+             n_epochs: Number of optimization epochs
+             lr: Learning rate
+             eps: Perturbation size for finite differences
+             verbose: Print progress
+             
+         Returns:
+             dict with 'simulated', 'losses', 'nse', 'final_loss', 'optimized_manning_n'
+     )pbdoc");
  
      // =========================================================================
      // Version info

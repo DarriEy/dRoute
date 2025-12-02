@@ -7,6 +7,7 @@ project(dmc_route
 
 # ============ Options ============
 option(DMC_ENABLE_AD "Enable automatic differentiation via CoDiPack" ON)
+option(DMC_ENABLE_ENZYME "Enable Enzyme AD (requires Clang with Enzyme plugin)" OFF)
 option(DMC_ENABLE_NETCDF "Enable NetCDF input support" ON)
 option(DMC_BUILD_TESTS "Build unit tests" ON)
 option(DMC_BUILD_PYTHON "Build Python bindings via pybind11" OFF)
@@ -33,6 +34,84 @@ if(DMC_ENABLE_AD)
     )
     FetchContent_MakeAvailable(codipack)
     message(STATUS "CoDiPack enabled for automatic differentiation")
+endif()
+
+# Enzyme AD support
+if(DMC_ENABLE_ENZYME)
+    # Enzyme is a compiler PLUGIN, not a linked library
+    # It transforms LLVM IR at compile time to generate derivatives
+    
+    # Try to find Enzyme plugin
+    set(ENZYME_SEARCH_PATHS
+        "/opt/homebrew/lib"
+        "/opt/homebrew/Cellar/enzyme"
+        "/usr/local/lib"
+        "/usr/lib"
+        "${CMAKE_PREFIX_PATH}/lib"
+    )
+    
+    # Find the ClangEnzyme plugin
+    find_file(ENZYME_PLUGIN
+        NAMES 
+            ClangEnzyme-21.dylib
+            ClangEnzyme-20.dylib
+            ClangEnzyme-19.dylib
+            ClangEnzyme-18.dylib
+            ClangEnzyme-17.dylib
+            ClangEnzyme.dylib
+            LLDEnzyme-21.dylib
+            LLVMEnzyme-21.dylib
+            ClangEnzyme-21.so
+            ClangEnzyme-20.so
+            ClangEnzyme-19.so
+            ClangEnzyme.so
+        PATHS ${ENZYME_SEARCH_PATHS}
+        PATH_SUFFIXES enzyme
+        NO_DEFAULT_PATH
+    )
+    
+    # Also try globbing for any version
+    if(NOT ENZYME_PLUGIN)
+        file(GLOB ENZYME_PLUGIN_GLOB 
+            "/opt/homebrew/lib/ClangEnzyme*.dylib"
+            "/opt/homebrew/Cellar/enzyme/*/lib/ClangEnzyme*.dylib"
+            "/usr/lib/ClangEnzyme*.so"
+            "/usr/local/lib/ClangEnzyme*.so"
+        )
+        if(ENZYME_PLUGIN_GLOB)
+            list(GET ENZYME_PLUGIN_GLOB 0 ENZYME_PLUGIN)
+        endif()
+    endif()
+    
+    if(ENZYME_PLUGIN)
+        message(STATUS "Found Enzyme plugin: ${ENZYME_PLUGIN}")
+        
+        # Enzyme is used as a compiler plugin via -fplugin flag
+        set(ENZYME_COMPILE_FLAGS "-fplugin=${ENZYME_PLUGIN}")
+        set(DMC_ENZYME_AVAILABLE TRUE)
+        
+        # Check if using Clang
+        if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            message(WARNING "Enzyme requires Clang compiler. Current: ${CMAKE_CXX_COMPILER_ID}")
+            message(WARNING "Enzyme AD will be available but may not work correctly.")
+        endif()
+        
+    else()
+        message(WARNING "")
+        message(WARNING "==========================================================")
+        message(WARNING "Enzyme plugin not found!")
+        message(WARNING "")
+        message(WARNING "Enzyme AD will be DISABLED.")
+        message(WARNING "")
+        message(WARNING "To enable Enzyme:")
+        message(WARNING "  1. Install Enzyme: brew install enzyme  (macOS)")
+        message(WARNING "  2. Or build from source: https://enzyme.mit.edu")
+        message(WARNING "  3. Specify plugin path: -DENZYME_PLUGIN=/path/to/ClangEnzyme.so")
+        message(WARNING "==========================================================")
+        message(WARNING "")
+        set(DMC_ENABLE_ENZYME OFF)
+        set(DMC_ENZYME_AVAILABLE FALSE)
+    endif()
 endif()
 
 # OpenMP for parallel routing
@@ -145,6 +224,13 @@ if(DMC_ENABLE_AD)
     target_compile_definitions(dmc_route INTERFACE DMC_USE_CODIPACK)
 endif()
 
+# Enzyme support
+if(DMC_ENABLE_ENZYME AND DMC_ENZYME_AVAILABLE)
+    target_compile_definitions(dmc_route INTERFACE DMC_USE_ENZYME)
+    target_compile_options(dmc_route INTERFACE ${ENZYME_COMPILE_FLAGS})
+    message(STATUS "Enzyme AD enabled with plugin: ${ENZYME_PLUGIN}")
+endif()
+
 # NetCDF support
 if(DMC_ENABLE_NETCDF)
     target_compile_definitions(dmc_route INTERFACE DMC_USE_NETCDF)
@@ -247,6 +333,11 @@ if(DMC_BUILD_TESTS)
     add_executable(test_comprehensive tests/test_comprehensive.cpp)
     target_link_libraries(test_comprehensive PRIVATE dmc_route)
     add_test(NAME comprehensive_suite COMMAND test_comprehensive)
+    
+    # AD Backend Comparison test (CoDiPack vs Enzyme)
+    add_executable(test_ad_backend_comparison tests/test_ad_backend_comparison.cpp)
+    target_link_libraries(test_ad_backend_comparison PRIVATE dmc_route)
+    add_test(NAME ad_backend_comparison COMMAND test_ad_backend_comparison)
 endif()
 
 # OpenMP linking for parallel routing
@@ -255,18 +346,13 @@ if(DMC_ENABLE_OPENMP)
     target_link_libraries(dmc_route_run PRIVATE OpenMP::OpenMP_CXX)
     if(DMC_BUILD_TESTS)
         target_link_libraries(test_comprehensive PRIVATE OpenMP::OpenMP_CXX)
+        target_link_libraries(test_ad_backend_comparison PRIVATE OpenMP::OpenMP_CXX)
     endif()
 endif()
 
-# ============ Python Bindings ============
-if(DMC_BUILD_PYTHON)
-    find_package(pybind11 QUIET)
-    if(pybind11_FOUND)
-        pybind11_add_module(pydmc_route python/bindings.cpp)
-        target_link_libraries(pydmc_route PRIVATE dmc_route)
-    else()
-        message(WARNING "pybind11 not found, skipping Python bindings")
-    endif()
+# Enzyme compile options for test targets
+if(DMC_ENABLE_ENZYME AND DMC_ENZYME_AVAILABLE AND DMC_BUILD_TESTS)
+    target_compile_options(test_ad_backend_comparison PRIVATE ${ENZYME_COMPILE_FLAGS})
 endif()
 
 # ============ Installation ============

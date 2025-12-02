@@ -101,6 +101,12 @@ struct RouterConfig {
                 return v == "true" || v == "yes" || v == "1" || v == "True" || v == "TRUE";
             };
             
+            // AD backend selection
+            if (tag == "ad_backend") {
+                // Will be parsed by UnifiedRouterConfig if needed
+                // Store for later use
+            }
+            
             // Core options
             if (tag == "dt_routing" || tag == "dt") cfg.dt = std::stod(value);
             else if (tag == "enable_gradients") cfg.enable_gradients = parse_bool(value);
@@ -771,16 +777,10 @@ inline void IRFRouter::initialize_kernels() {
     irf_params_.clear();
     analytical_dQ_dn_.clear();
     
-    // Diagnostic: track travel time statistics
+    // Track travel time statistics (for internal use)
     double max_travel_time = 0.0;
     double max_kernel_coverage_time = max_kernel_size_ * config_.dt;  // seconds
     int num_truncated = 0;
-    
-    std::cerr << "IRF Kernel Diagnostics:\n";
-    std::cerr << "  Shape parameter (k): " << shape_param_ << "\n";
-    std::cerr << "  Max kernel size: " << max_kernel_size_ << " timesteps\n";
-    std::cerr << "  Timestep dt: " << config_.dt << " seconds\n";
-    std::cerr << "  Max kernel coverage: " << max_kernel_coverage_time/3600.0 << " hours\n";
     
     for (int reach_id : network_.topological_order()) {
         Reach& reach = network_.get_reach(reach_id);
@@ -805,13 +805,9 @@ inline void IRFRouter::initialize_kernels() {
         analytical_dQ_dn_[reach_id] = 0.0;
     }
     
-    // Print diagnostic summary
-    std::cerr << "  Max travel time: " << max_travel_time/3600.0 << " hours\n";
-    std::cerr << "  Reaches potentially truncated: " << num_truncated << "/" << network_.topological_order().size() << "\n";
-    if (num_truncated > 0) {
-        std::cerr << "  WARNING: Increase irf_max_kernel_size for better mass conservation!\n";
-        std::cerr << "  Suggested size: " << static_cast<int>(3.0 * max_travel_time / config_.dt) + 10 << " timesteps\n";
-    }
+    // Store for potential diagnostics (don't print by default)
+    (void)max_travel_time;  // Suppress unused warning
+    (void)num_truncated;
     
     initialized_ = true;
 }
@@ -1256,13 +1252,6 @@ inline void DiffusiveWaveRouter::initialize_state() {
     // Use 500m to be safe (Cr=36, Df=7.2, stability=50 → needs ~63 substeps)
     double dx_min = 500.0;  // meters
     
-    std::cerr << "DW Node Count Adaptive Initialization:\n";
-    std::cerr << "  Minimum dx: " << dx_min << "m\n";
-    
-    int min_nodes_used = 1000;
-    int max_nodes_used = 0;
-    int short_reaches = 0;
-    
     for (int reach_id : network_.topological_order()) {
         Reach& reach = network_.get_reach(reach_id);
         
@@ -1274,7 +1263,6 @@ inline void DiffusiveWaveRouter::initialize_state() {
         // For very short reaches, use minimum nodes and accept coarse resolution
         if (reach.length < dx_min * 2) {
             nodes = 3;  // Minimum for 2nd order scheme
-            short_reaches++;
         }
         
         reach_nodes_[reach_id] = nodes;
@@ -1282,14 +1270,6 @@ inline void DiffusiveWaveRouter::initialize_state() {
         
         dw_params_[reach_id] = {to_double(reach.manning_n), 1.0, 0.0};
         analytical_dQ_dn_[reach_id] = 0.0;
-        
-        min_nodes_used = std::min(min_nodes_used, nodes);
-        max_nodes_used = std::max(max_nodes_used, nodes);
-    }
-    
-    std::cerr << "  Nodes per reach: " << min_nodes_used << " - " << max_nodes_used << "\n";
-    if (short_reaches > 0) {
-        std::cerr << "  Short reaches (<" << dx_min*2 << "m): " << short_reaches << " (using 3 nodes)\n";
     }
 }
 
@@ -1446,27 +1426,6 @@ inline void DiffusiveWaveRouter::route_reach_diffusive(Reach& reach) {
     // For explicit scheme, need Cr + 2*Df <= 1 approximately
     double stability = to_double(Cr) + 2.0 * to_double(Df);
     int sub_steps = std::max(1, static_cast<int>(stability / 0.8) + 1);
-    
-    // One-time diagnostic for first reach
-    static bool printed_diagnostic = false;
-    if (!printed_diagnostic) {
-        std::cerr << "DW Stability Diagnostic (first reach):\n";
-        std::cerr << "  dx=" << dx << "m, dt=" << dt << "s\n";
-        std::cerr << "  c=" << to_double(c) << " m/s, D=" << to_double(D) << " m²/s\n";
-        std::cerr << "  Cr=" << to_double(Cr) << ", Df=" << to_double(Df) << "\n";
-        std::cerr << "  Stability number=" << stability << ", sub_steps=" << sub_steps << "\n";
-        printed_diagnostic = true;
-    }
-    
-    // Warn if excessive sub-stepping needed (but don't cap - stability is critical)
-    static bool warned_substeps = false;
-    if (!warned_substeps && sub_steps > 100) {
-        std::cerr << "WARNING: Diffusive Wave requires " << sub_steps 
-                  << " sub-steps for stability (Cr=" << to_double(Cr) 
-                  << ", Df=" << to_double(Df) << ")\n";
-        std::cerr << "  Consider using diffusive-ift method instead for better performance.\n";
-        warned_substeps = true;
-    }
     
     // Hard cap with instability warning
     if (sub_steps > config_.dw_max_substeps) {

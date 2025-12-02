@@ -13,7 +13,7 @@
 ! --- CORE SIMULATION OPTIONS ---
 <enable_gradients>      true
 <dt_routing>            3600
-<routing_method>        irf                 ! options: muskingum, irf, diffusive, diffusive-ift, lag, kwt, kwt-soft
+<routing_method>        kwt-soft                 ! options: muskingum, irf, diffusive, diffusive-ift, lag, kwt, kwt-soft
 <min_flow>              1e-6                ! minimum flow threshold [m³/s]
 
 ! --- RUNOFF VARIABLE (SUMMA) ---
