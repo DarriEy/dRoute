@@ -23,6 +23,7 @@
 #include <memory>
 #include <vector>
 #include <stdexcept>
+#include <sstream>
 
 namespace dmc {
 
@@ -246,6 +247,32 @@ public:
             values[i] = reach_props_[i * enzyme::NUM_REACH_PROPS_FULL + 2];
         }
         return values;
+    }
+    
+    std::string get_topology_debug() const {
+        std::ostringstream ss;
+        ss << "EnzymeRouter topology: " << n_reaches_ << " reaches\n";
+        int total_upstream = 0;
+        for (int i = 0; i < n_reaches_; ++i) {
+            total_upstream += upstream_counts_[i];
+        }
+        ss << "  Total upstream connections: " << total_upstream << "\n";
+        
+        // Count headwaters (reaches with no upstream)
+        int headwaters = 0;
+        for (int i = 0; i < n_reaches_; ++i) {
+            if (upstream_counts_[i] == 0) headwaters++;
+        }
+        ss << "  Headwater reaches: " << headwaters << "\n";
+        
+        // Find outlet
+        int outlets = 0;
+        for (int i = 0; i < n_reaches_; ++i) {
+            if (downstream_idx_[i] < 0) outlets++;
+        }
+        ss << "  Outlet reaches: " << outlets << "\n";
+        
+        return ss.str();
     }
     
 private:

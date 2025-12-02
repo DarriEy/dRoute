@@ -662,7 +662,10 @@
              "Number of reaches in network")
          
          .def_property_readonly("dt", &EnzymeRouter::dt,
-             "Timestep in seconds");
+             "Timestep in seconds")
+         
+         .def("get_topology_debug", &EnzymeRouter::get_topology_debug,
+             "Get debug string showing network topology structure");
      
      // Compute numerical gradients
      enzyme.def("compute_gradients_numerical", [](
@@ -726,9 +729,9 @@
              router.set_manning_n(i, orig);
          }
          
-         // Return gradients and base loss
+         // Return gradients and base loss - use py::cast for proper memory handling
          py::dict result;
-         result["gradients"] = py::array_t<double>(gradients.size(), gradients.data());
+         result["gradients"] = py::cast(gradients);
          result["loss"] = base_loss;
          return result;
      },
@@ -767,17 +770,19 @@
          double* runoff_ptr = static_cast<double*>(runoff_buf.ptr);
          
          router.reset_state();
-         std::vector<double> outlet_Q(n_timesteps);
          
+         // Simulate into vector
+         std::vector<double> sim(n_timesteps);
          for (int t = 0; t < n_timesteps; ++t) {
              for (int i = 0; i < n_reaches; ++i) {
                  router.set_lateral_inflow(i, runoff_ptr[t * n_reaches + i]);
              }
              router.route_timestep();
-             outlet_Q[t] = router.get_discharge(outlet_reach);
+             sim[t] = router.get_discharge(outlet_reach);
          }
          
-         return py::array_t<double>(outlet_Q.size(), outlet_Q.data());
+         // Use py::cast for proper memory handling
+         return py::cast(sim);
      },
      py::arg("router"),
      py::arg("runoff"),
@@ -887,11 +892,28 @@
              }
          }
          
-         // Final simulation
+         // Final simulation - avoid structured bindings for reliability
          for (int i = 0; i < n_reaches; ++i) {
              router.set_manning_n(i, std::exp(log_n[i]));
          }
-         auto [final_loss, final_sim] = run_and_loss();
+         
+         // Run final simulation explicitly (not through lambda)
+         router.reset_state();
+         std::vector<double> final_sim(n_timesteps);
+         for (int t = 0; t < n_timesteps; ++t) {
+             for (int i = 0; i < n_reaches; ++i) {
+                 router.set_lateral_inflow(i, runoff_ptr[t * n_reaches + i]);
+             }
+             router.route_timestep();
+             final_sim[t] = router.get_discharge(outlet_reach);
+         }
+         
+         double final_loss = 0.0;
+         for (int t = 0; t < n_timesteps; ++t) {
+             double diff = final_sim[t] - obs_ptr[t];
+             final_loss += diff * diff;
+         }
+         final_loss /= n_timesteps;
          
          // Compute final metrics
          double obs_mean = 0.0;
@@ -905,18 +927,22 @@
          }
          double nse = 1.0 - ss_res / ss_tot;
          
-         // Return results
+         // Return results - use py::cast for automatic vector-to-numpy conversion
          py::dict result;
-         result["simulated"] = py::array_t<double>(final_sim.size(), final_sim.data());
-         result["losses"] = py::array_t<double>(losses.size(), losses.data());
+         
+         // Use py::cast to properly convert vector to numpy array
+         // This handles memory ownership correctly
+         result["simulated"] = py::cast(final_sim);
+         result["losses"] = py::cast(losses);
          result["nse"] = nse;
          result["final_loss"] = final_loss;
          
-         std::vector<double> final_manning(n_reaches);
+         // Convert manning_n to vector then cast
+         std::vector<double> manning_vec(n_reaches);
          for (int i = 0; i < n_reaches; ++i) {
-             final_manning[i] = std::exp(log_n[i]);
+             manning_vec[i] = std::exp(log_n[i]);
          }
-         result["optimized_manning_n"] = py::array_t<double>(final_manning.size(), final_manning.data());
+         result["optimized_manning_n"] = py::cast(manning_vec);
          
          return result;
      },

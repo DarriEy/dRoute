@@ -1,24 +1,54 @@
 # dRoute: Differentiable River Routing Library
 
-A high-performance differentiable routing library for hydrological modeling, supporting automatic differentiation via dual AD backends (CoDiPack and Enzyme). Designed for integration with land surface models like SUMMA and routing frameworks like mizuRoute.
+A high-performance differentiable routing library for hydrological modeling. Implements multiple routing methods with automatic differentiation support for parameter optimization.
+
+## Quick Start
+
+### 1. Build
+
+```bash
+git clone https://github.com/DarriEy/dRoute.git
+cd dRoute
+mkdir build && cd build
+cmake .. -DDMC_BUILD_PYTHON=ON
+make -j4
+```
+
+### 2. Test Installation
+
+```bash
+cd ..
+export PYTHONPATH=$PYTHONPATH:$(pwd)/build/python
+python -c "import pydmc_route as dmc; print(f'dRoute v{dmc.__version__} loaded')"
+```
+
+### 3. Run with Sample Data
+
+```bash
+# Forward pass (all routing methods)
+python python/test_routing_with_data.py --data-dir data
+
+# Parameter optimization with fast Enzyme kernels
+python python/test_routing_with_data.py --data-dir data --optimize --fast --methods mc
+```
 
 ## Features
 
-- **Multiple routing methods**: Muskingum-Cunge, Kinematic Wave (KWT), IRF, Lag, Diffusive Wave
-- **Dual AD backends**: CoDiPack (tape-based) and Enzyme (source-to-source)
-- **Network topology**: Full support for river network connectivity with junctions/confluences
-- **Python bindings**: Complete API via pybind11
-- **mizuRoute compatible**: Reads standard topology.nc files
+- **5 routing methods**: Muskingum-Cunge, KWT-Soft, Diffusive Wave, IRF, Lag
+- **Automatic differentiation**: CoDiPack (tape-based) and Enzyme (source-to-source) backends
+- **Network topology**: Full support for river networks with tributaries and confluences
+- **mizuRoute compatible**: Reads standard `topology.nc` files
+- **Fast optimization**: Gradient-based calibration of Manning's n
 
 ## Routing Methods
 
-| Method | Class | Gradients | Speed | Description |
-|--------|-------|-----------|-------|-------------|
-| Muskingum-Cunge | `MuskingumCungeRouter` | Full AD (5 params) | Fast | Industry-standard flood routing |
-| KWT-Soft | `SoftGatedKWT` | Full AD | Medium | Differentiable Lagrangian wave tracking |
-| Diffusive-IFT | `DiffusiveWaveIFT` | Implicit Function Theorem | Medium | Physics-based with exact gradients |
-| IRF | `IRFRouter` | Full AD (soft-masked) | Medium | Unit hydrograph convolution |
-| Lag | `LagRouter` | Analytical (weak) | Fast | Simple time delay |
+| Method | Class | Gradients | Speed | Use Case |
+|--------|-------|-----------|-------|----------|
+| Muskingum-Cunge | `MuskingumCungeRouter` | Full AD | ~4,500/s | Production routing |
+| KWT-Soft | `SoftGatedKWT` | Full AD | ~4,000/s | Differentiable wave tracking |
+| Diffusive Wave | `DiffusiveWaveIFT` | IFT | ~3,000/s | Physics-based routing |
+| IRF | `IRFRouter` | Full AD | ~1,100/s | Unit hydrograph |
+| Lag | `LagRouter` | Analytical | ~22,000/s | Simple delay |
 
 ## Installation
 
@@ -26,26 +56,37 @@ A high-performance differentiable routing library for hydrological modeling, sup
 
 - C++17 compiler (GCC 9+, Clang 10+, Apple Clang 12+)
 - CMake 3.15+
-- Python 3.8+ (for bindings)
+- Python 3.8+ with NumPy
 
-### Build from Source
+### macOS (Apple Silicon)
 
 ```bash
+# Install dependencies
+brew install cmake
+
+# Build
 git clone https://github.com/DarriEy/dRoute.git
 cd dRoute
 mkdir build && cd build
-
-# Basic build
 cmake .. -DDMC_BUILD_PYTHON=ON
-make -j4
+make -j$(sysctl -n hw.ncpu)
 
-# With Enzyme AD (requires ClangEnzyme plugin)
-cmake .. -DDMC_BUILD_PYTHON=ON \
-         -DDMC_ENABLE_ENZYME=ON \
-         -DENZYME_PLUGIN=/path/to/ClangEnzyme-19.dylib
-make -j4
+# Set up Python path
+echo 'export PYTHONPATH=$PYTHONPATH:'$(pwd)'/python' >> ~/.zshrc
+source ~/.zshrc
+```
 
-# Add Python module to path
+### Linux (HPC)
+
+```bash
+module load cmake gcc python
+
+git clone https://github.com/DarriEy/dRoute.git
+cd dRoute
+mkdir build && cd build
+cmake .. -DDMC_BUILD_PYTHON=ON -DCMAKE_CXX_COMPILER=g++
+make -j8
+
 export PYTHONPATH=$PYTHONPATH:$(pwd)/python
 ```
 
@@ -59,7 +100,7 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/python
 | `DMC_ENABLE_OPENMP` | OFF | Enable OpenMP parallelization |
 | `DMC_BUILD_TESTS` | ON | Build C++ test suite |
 
-## Quick Start
+## Usage
 
 ### Python API
 
@@ -70,38 +111,69 @@ import numpy as np
 # Create network
 network = dmc.Network()
 
-# Add reaches
+# Add reaches with topology
 for i in range(10):
     reach = dmc.Reach()
     reach.id = i
     reach.length = 5000.0  # meters
     reach.slope = 0.001
     reach.manning_n = 0.035
-    reach.geometry.width_coef = 7.2
-    reach.geometry.width_exp = 0.5
+    reach.upstream_junction_id = i
+    reach.downstream_junction_id = i + 1 if i < 9 else -1  # -1 = outlet
     network.add_reach(reach)
+
+# Add junctions for connectivity
+for i in range(10):
+    junc = dmc.Junction()
+    junc.id = i
+    junc.upstream_reach_ids = [i-1] if i > 0 else []
+    junc.downstream_reach_ids = [i]
+    network.add_junction(junc)
 
 network.build_topology()
 
-# Configure router
+# Configure and create router
 config = dmc.RouterConfig()
 config.dt = 3600.0  # 1-hour timestep
-config.enable_gradients = True
 
-# Create router (choose method)
 router = dmc.MuskingumCungeRouter(network, config)
-# or: router = dmc.SoftGatedKWT(network, config)
-# or: router = dmc.DiffusiveWaveIFT(network, config)
 
 # Run simulation
-n_timesteps = 100
-outlet_Q = np.zeros(n_timesteps)
+runoff = np.random.rand(100, 10) * 0.001  # (timesteps, reaches) in m/s
+outlet_Q = []
 
-for t in range(n_timesteps):
+for t in range(100):
     for r in range(10):
         router.set_lateral_inflow(r, runoff[t, r])
     router.route_timestep()
-    outlet_Q[t] = router.get_discharge(outlet_reach_id)
+    outlet_Q.append(router.get_discharge(9))  # outlet reach
+```
+
+### Fast Optimization with Enzyme
+
+```python
+import pydmc_route as dmc
+import numpy as np
+
+# Load network from topology.nc (see test_routing_with_data.py)
+network = load_topology('topology.nc')
+
+# Create Enzyme router (fast, no AD tape overhead)
+router = dmc.enzyme.EnzymeRouter(network, dt=3600.0, num_substeps=4)
+
+# Optimize Manning's n
+result = dmc.enzyme.optimize(
+    router,
+    runoff,           # (n_timesteps, n_reaches) in m³/s
+    observed,         # (n_timesteps,) observed discharge at outlet
+    outlet_reach=0,   # outlet reach index
+    n_epochs=30,
+    lr=0.1,
+    verbose=True
+)
+
+print(f"NSE: {result['nse']:.3f}")
+print(f"Optimized Manning's n: {result['optimized_manning_n']}")
 ```
 
 ### Loading mizuRoute Topology
@@ -110,23 +182,29 @@ for t in range(n_timesteps):
 import xarray as xr
 import pydmc_route as dmc
 
-# Load topology.nc
 ds = xr.open_dataset('topology.nc')
 seg_ids = ds['segId'].values
 down_seg_ids = ds['downSegId'].values
 lengths = ds['length'].values
 slopes = ds['slope'].values
 
-# Build network with proper connectivity
+# Build network
 network = dmc.Network()
 seg_id_to_idx = {int(sid): i for i, sid in enumerate(seg_ids)}
 
+# Build upstream map
+upstream_map = {i: [] for i in range(len(seg_ids))}
+for i, down_id in enumerate(down_seg_ids):
+    if int(down_id) in seg_id_to_idx:
+        upstream_map[seg_id_to_idx[int(down_id)]].append(i)
+
+# Add reaches
 for i in range(len(seg_ids)):
     reach = dmc.Reach()
     reach.id = i
     reach.length = float(lengths[i])
-    reach.slope = float(slopes[i])
-    reach.manning_n = 0.035
+    reach.slope = max(float(slopes[i]), 0.0001)
+    reach.manning_n = 0.05
     reach.upstream_junction_id = i
     
     down_id = int(down_seg_ids[i])
@@ -137,60 +215,79 @@ for i in range(len(seg_ids)):
     
     network.add_reach(reach)
 
-# Create junctions for tributary connections
-# ... (see test_routing_with_data.py for full example)
+# Add junctions
+for i in range(len(seg_ids)):
+    junc = dmc.Junction()
+    junc.id = i
+    junc.upstream_reach_ids = upstream_map[i]
+    junc.downstream_reach_ids = [i]
+    network.add_junction(junc)
 
 network.build_topology()
 ```
 
-### Running with Real Data
+## Data Directory Structure
 
-```bash
-# Test with SUMMA output and observations
-python python/test_routing_with_data.py --data-dir /path/to/data
-
-# Expected data structure:
-# data/
-#   settings/mizuRoute/topology.nc
-#   simulations/SUMMA/*_timestep.nc
-#   observations/**/streamflow.csv
 ```
+data/
+├── settings/
+│   └── dRoute/
+│       └── topology.nc          # River network topology
+├── simulations/
+│   └── SUMMA/
+│       └── run_1_timestep.nc    # SUMMA runoff output
+└── observations/
+    └── streamflow/
+        └── streamflow.csv       # Observed discharge
+```
+
+### topology.nc Variables
+
+| Variable | Dimensions | Description |
+|----------|------------|-------------|
+| `segId` | (seg) | Segment IDs |
+| `downSegId` | (seg) | Downstream segment ID |
+| `length` | (seg) | Reach length (m) |
+| `slope` | (seg) | Channel slope (m/m) |
+| `hruId` | (hru) | HRU IDs |
+| `hruToSegId` | (hru) | HRU to segment mapping |
+| `area` | (hru) | HRU area (m²) |
 
 ## Testing
 
 ```bash
-# Run C++ tests
+# C++ tests
 cd build
 ctest --output-on-failure
 
-# Run Python tests
-python python/test_routing_with_data.py --data-dir data --methods mc kwt diffusive
+# Python tests
+cd ..
+PYTHONPATH=build/python python python/test_routing_with_data.py --data-dir data
+
+# Quick synthetic test (no data needed)
+PYTHONPATH=build/python python python/test_routing_with_data.py
 ```
 
 ## Learnable Parameters
 
-All routers support gradients for Manning's n. The Muskingum-Cunge router additionally supports:
+All routers support gradients for:
+- `manning_n`: Manning's roughness coefficient
 
-- `width_coef`: Channel width coefficient (W = a × Q^b)
-- `width_exp`: Channel width exponent
-- `depth_coef`: Channel depth coefficient (D = c × Q^d)  
-- `depth_exp`: Channel depth exponent
+Muskingum-Cunge additionally supports:
+- `width_coef`, `width_exp`: W = a × Q^b
+- `depth_coef`, `depth_exp`: D = c × Q^d
 
-## Performance
+## Performance Benchmarks
 
-Typical throughput on Apple M1:
+Bow at Banff basin (49 reaches, 2200 km², 8760 hourly timesteps):
 
-| Method | Throughput (timesteps/s) | Notes |
-|--------|-------------------------|-------|
-| Lag | ~22,000 | Fastest, simple delay |
-| MC | ~4,600 | Good balance |
-| KWT-Soft | ~4,000 | With gradient support |
-| IRF | ~1,100 | Convolution overhead |
-| Diffusive | ~800 | Most physics |
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| Forward pass (MC) | 2.0s | 4,500 ts/s |
+| Forward pass (all 5 methods) | 18s | - |
+| Optimization (30 epochs) | 31s | - |
 
 ## Citation
-
-If you use dRoute in your research, please cite:
 
 ```bibtex
 @software{dRoute2024,
@@ -208,5 +305,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 - CoDiPack team for the AD library
-- Enzyme team for the AD compiler plugin
+- Enzyme team for the AD compiler plugin  
 - SUMMA and mizuRoute communities for inspiration

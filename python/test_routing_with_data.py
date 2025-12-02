@@ -1104,6 +1104,16 @@ def run_tests(data_dir: Optional[Path] = None,
                     
                     elapsed = time.time() - start_time
                     
+                    # Convert lists to numpy arrays if needed (py::cast returns list)
+                    sim_data = opt_result['simulated']
+                    if isinstance(sim_data, list):
+                        sim_data = np.array(sim_data)
+                        opt_result['simulated'] = sim_data
+                    if isinstance(opt_result.get('optimized_manning_n'), list):
+                        opt_result['optimized_manning_n'] = np.array(opt_result['optimized_manning_n'])
+                    if isinstance(opt_result.get('losses'), list):
+                        opt_result['losses'] = np.array(opt_result['losses'])
+                    
                     opt_results = {
                         'nse': opt_result['nse'],
                         'kge': kge(opt_result['simulated'], obs_subset),
