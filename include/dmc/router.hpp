@@ -279,12 +279,61 @@ public:
     void stop_recording();
     
     /**
-     * Compute gradients via reverse AD.
+     * Record current discharge at a reach for gradient computation.
+     * Call this after each route_timestep() for reaches where you have observations.
+     * The recorded values are stored on the tape for backpropagation.
+     */
+    void record_output(int reach_id);
+    
+    /**
+     * Record current discharge at multiple reaches.
+     */
+    void record_outputs(const std::vector<int>& reach_ids);
+    
+    /**
+     * Clear recorded output history.
+     */
+    void clear_output_history();
+    
+    /**
+     * Get number of recorded timesteps for a reach.
+     */
+    size_t get_output_history_size(int reach_id) const;
+    
+    /**
+     * Get recorded output values (as doubles) for a reach.
+     */
+    std::vector<double> get_output_history(int reach_id) const;
+    
+    /**
+     * Compute gradients via reverse AD for single point.
      * @param gauge_reaches Reach IDs where we have observations
      * @param dL_dQ Gradient of loss w.r.t. discharge at each gauge
      */
     void compute_gradients(const std::vector<int>& gauge_reaches,
                            const std::vector<double>& dL_dQ);
+    
+    /**
+     * Compute gradients via reverse AD for full timeseries.
+     * This properly accumulates gradients across all timesteps.
+     * 
+     * @param reach_id Reach ID where we have observations
+     * @param dL_dQ Gradient of loss w.r.t. discharge at each timestep
+     *              Must have same length as number of recorded outputs
+     * 
+     * For MSE loss: dL_dQ[t] = 2 * (sim[t] - obs[t]) / n_timesteps
+     */
+    void compute_gradients_timeseries(int reach_id,
+                                      const std::vector<double>& dL_dQ);
+    
+    /**
+     * Compute gradients via reverse AD for full timeseries at multiple reaches.
+     * 
+     * @param reach_ids Reach IDs where we have observations
+     * @param dL_dQ Gradients for each reach, each with length == recorded timesteps
+     */
+    void compute_gradients_timeseries(const std::vector<int>& reach_ids,
+                                      const std::vector<std::vector<double>>& dL_dQ);
     
     /**
      * Get accumulated gradients for all parameters.
@@ -343,6 +392,10 @@ private:
     // Gauge output storage for gradient computation
     std::vector<int> gauge_reach_ids_;
     std::vector<Real> gauge_outputs_;
+    
+    // Timeseries output storage: reach_id -> vector of outputs per timestep
+    // These Real values are recorded on the tape for backpropagation
+    std::unordered_map<int, std::vector<Real>> output_history_;
     
     /**
      * Compute inflow to a reach from upstream junction.
@@ -594,6 +647,125 @@ inline void MuskingumCungeRouter::compute_gradients(
     network_.collect_gradients();
     
     // NOW deactivate the tape
+    deactivate_tape();
+}
+
+inline void MuskingumCungeRouter::record_output(int reach_id) {
+    if (!recording_ || !AD_ENABLED) return;
+    
+    // Copy current discharge to history vector
+    // This copy operation IS recorded on the tape
+    Real Q_out = network_.get_reach(reach_id).outflow_curr;
+    output_history_[reach_id].push_back(Q_out);
+}
+
+inline void MuskingumCungeRouter::record_outputs(const std::vector<int>& reach_ids) {
+    for (int reach_id : reach_ids) {
+        record_output(reach_id);
+    }
+}
+
+inline void MuskingumCungeRouter::clear_output_history() {
+    output_history_.clear();
+}
+
+inline size_t MuskingumCungeRouter::get_output_history_size(int reach_id) const {
+    auto it = output_history_.find(reach_id);
+    if (it != output_history_.end()) {
+        return it->second.size();
+    }
+    return 0;
+}
+
+inline std::vector<double> MuskingumCungeRouter::get_output_history(int reach_id) const {
+    std::vector<double> result;
+    auto it = output_history_.find(reach_id);
+    if (it != output_history_.end()) {
+        result.reserve(it->second.size());
+        for (const Real& val : it->second) {
+            result.push_back(to_double(val));
+        }
+    }
+    return result;
+}
+
+inline void MuskingumCungeRouter::compute_gradients_timeseries(
+    int reach_id,
+    const std::vector<double>& dL_dQ) {
+    
+    if (!AD_ENABLED) return;
+    
+    auto it = output_history_.find(reach_id);
+    if (it == output_history_.end()) {
+        std::cerr << "Warning: No recorded outputs for reach " << reach_id << std::endl;
+        return;
+    }
+    
+    std::vector<Real>& history = it->second;
+    
+    if (dL_dQ.size() != history.size()) {
+        std::cerr << "Warning: dL_dQ size (" << dL_dQ.size() 
+                  << ") != recorded timesteps (" << history.size() << ")" << std::endl;
+        return;
+    }
+    
+    // Register all outputs and seed their adjoints
+    for (size_t t = 0; t < history.size(); ++t) {
+        register_output(history[t]);
+        set_gradient(history[t], dL_dQ[t]);
+    }
+    
+    // Single reverse pass accumulates all gradients
+    evaluate_tape();
+    
+    // Collect gradients from tape
+    network_.collect_gradients();
+    
+    // Deactivate tape
+    deactivate_tape();
+}
+
+inline void MuskingumCungeRouter::compute_gradients_timeseries(
+    const std::vector<int>& reach_ids,
+    const std::vector<std::vector<double>>& dL_dQ) {
+    
+    if (!AD_ENABLED) return;
+    
+    if (reach_ids.size() != dL_dQ.size()) {
+        std::cerr << "Warning: reach_ids size != dL_dQ size" << std::endl;
+        return;
+    }
+    
+    // Register all outputs and seed their adjoints for all reaches
+    for (size_t i = 0; i < reach_ids.size(); ++i) {
+        int reach_id = reach_ids[i];
+        auto it = output_history_.find(reach_id);
+        if (it == output_history_.end()) {
+            std::cerr << "Warning: No recorded outputs for reach " << reach_id << std::endl;
+            continue;
+        }
+        
+        std::vector<Real>& history = it->second;
+        const std::vector<double>& grads = dL_dQ[i];
+        
+        if (grads.size() != history.size()) {
+            std::cerr << "Warning: dL_dQ[" << i << "] size mismatch" << std::endl;
+            continue;
+        }
+        
+        for (size_t t = 0; t < history.size(); ++t) {
+            register_output(history[t]);
+            set_gradient(history[t], grads[t]);
+        }
+    }
+    
+    // Single reverse pass
+    evaluate_tape();
+    
+    // Collect gradients
+    network_.collect_gradients();
+    
+    // Deactivate tape
     deactivate_tape();
 }
 

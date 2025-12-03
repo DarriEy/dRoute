@@ -393,3 +393,25 @@ install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/dmc_routeConfigVersion.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dmc_route
 )
+
+# SUNDIALS support for Saint-Venant solver
+option(DMC_ENABLE_SUNDIALS "Enable SUNDIALS for SVE solver" OFF)
+
+if(DMC_ENABLE_SUNDIALS)
+    if(DEFINED SUNDIALS_ROOT)
+        set(SUNDIALS_DIR "${SUNDIALS_ROOT}/lib/cmake/sundials")
+    endif()
+    
+    find_package(SUNDIALS REQUIRED COMPONENTS cvodes nvecserial sunlinsoldense sunmatrixdense)
+    
+    add_definitions(-DDMC_ENABLE_SUNDIALS)
+    
+    target_link_libraries(pydmc_route PRIVATE 
+        SUNDIALS::cvodes 
+        SUNDIALS::nvecserial
+        SUNDIALS::sunlinsoldense
+        SUNDIALS::sunmatrixdense
+    )
+    
+    message(STATUS "SUNDIALS enabled for Saint-Venant solver")
+endif()

@@ -37,6 +37,7 @@
  #include <dmc/network.hpp>
  #include <dmc/network_io.hpp>
  #include <dmc/unified_router.hpp>
+ #include <dmc/saint_venant_router.hpp>
  
  namespace py = pybind11;
  using namespace dmc;
@@ -421,7 +422,38 @@
              py::return_value_policy::reference,
              "Access the network")
          .def_property_readonly("config", &MuskingumCungeRouter::config,
-             "Access the configuration");
+             "Access the configuration")
+         
+         // Timeseries gradient methods
+         .def("record_output", &MuskingumCungeRouter::record_output,
+             "Record current discharge at a reach for gradient computation",
+             py::arg("reach_id"))
+         .def("record_outputs", &MuskingumCungeRouter::record_outputs,
+             "Record current discharge at multiple reaches",
+             py::arg("reach_ids"))
+         .def("clear_output_history", &MuskingumCungeRouter::clear_output_history,
+             "Clear recorded output history")
+         .def("get_output_history_size", &MuskingumCungeRouter::get_output_history_size,
+             "Get number of recorded timesteps for a reach",
+             py::arg("reach_id"))
+         .def("get_output_history", &MuskingumCungeRouter::get_output_history,
+             "Get recorded output values for a reach",
+             py::arg("reach_id"))
+         .def("compute_gradients_timeseries", 
+             py::overload_cast<int, const std::vector<double>&>(
+                 &MuskingumCungeRouter::compute_gradients_timeseries),
+             R"doc(
+             Compute gradients for full timeseries at a single reach.
+             
+             This properly accumulates gradients across all timesteps.
+             
+             Args:
+                 reach_id: Reach ID where we have observations
+                 dL_dQ: Gradient of loss w.r.t. discharge at each timestep.
+                        For MSE: dL_dQ[t] = 2 * (sim[t] - obs[t]) / n_timesteps
+                        Must have same length as recorded outputs.
+             )doc",
+             py::arg("reach_id"), py::arg("dL_dQ"));
  
      // =========================================================================
      // IRFRouter
@@ -593,25 +625,43 @@
          This router is optimized for speed and can be used with numerical
          differentiation or (when compiled with Enzyme) automatic differentiation.
          
+         Supports multiple routing methods:
+         - 0: Muskingum-Cunge (default)
+         - 1: Lag (simple delay)
+         - 2: IRF (Impulse Response Function)
+         - 3: KWT (Kinematic Wave Tracking)
+         - 4: Diffusive Wave
+         
          Example:
-             >>> router = dmc.enzyme.EnzymeRouter(network)
+             >>> router = dmc.enzyme.EnzymeRouter(network, method=0)
              >>> router.set_lateral_inflows(runoff)
              >>> router.route_timestep()
              >>> Q = router.get_discharges()
          )pbdoc")
-         .def(py::init([](Network& network, double dt, int num_substeps) {
+         .def(py::init([](Network& network, double dt, int num_substeps, int method) {
              UnifiedRouterConfig config;
              config.dt = dt;
              config.num_substeps = num_substeps;
+             config.routing_method = static_cast<EnzymeRoutingMethod>(method);
              return new EnzymeRouter(network, config);
          }),
              py::arg("network"),
              py::arg("dt") = 3600.0,
              py::arg("num_substeps") = 4,
-             "Create EnzymeRouter from network")
+             py::arg("method") = 0,
+             "Create EnzymeRouter from network with specified routing method")
+         
+         .def("set_routing_method", [](EnzymeRouter& router, int method) {
+             router.set_routing_method(static_cast<EnzymeRoutingMethod>(method));
+         }, py::arg("method"), 
+            "Set routing method: 0=MC, 1=Lag, 2=IRF, 3=KWT, 4=Diffusive")
+         
+         .def("get_routing_method", [](EnzymeRouter& router) {
+             return static_cast<int>(router.get_routing_method());
+         }, "Get current routing method")
          
          .def("route_timestep", &EnzymeRouter::route_timestep,
-             "Route one timestep using Muskingum-Cunge kernel")
+             "Route one timestep using selected routing method")
          
          .def("route", &EnzymeRouter::route, py::arg("num_timesteps"),
              "Route multiple timesteps")
@@ -973,6 +1023,84 @@
          Returns:
              dict with 'simulated', 'losses', 'nse', 'final_loss', 'optimized_manning_n'
      )pbdoc");
+ 
+     // =========================================================================
+     // SaintVenantRouter - Full dynamic SVE solver
+     // =========================================================================
+     py::class_<SaintVenantConfig>(m, "SaintVenantConfig",
+         "Configuration for Saint-Venant Equations solver")
+         .def(py::init<>())
+         .def_readwrite("dt", &SaintVenantConfig::dt, "Output timestep [s]")
+         .def_readwrite("n_nodes", &SaintVenantConfig::n_nodes, "Spatial nodes per reach")
+         .def_readwrite("g", &SaintVenantConfig::g, "Gravitational acceleration [m/s²]")
+         .def_readwrite("rel_tol", &SaintVenantConfig::rel_tol, "Relative tolerance")
+         .def_readwrite("abs_tol", &SaintVenantConfig::abs_tol, "Absolute tolerance")
+         .def_readwrite("max_steps", &SaintVenantConfig::max_steps, "Max CVODES steps")
+         .def_readwrite("initial_depth", &SaintVenantConfig::initial_depth, "Initial water depth [m]")
+         .def_readwrite("initial_velocity", &SaintVenantConfig::initial_velocity, "Initial velocity [m/s]")
+         .def_readwrite("min_depth", &SaintVenantConfig::min_depth, "Minimum depth [m]")
+         .def_readwrite("min_area", &SaintVenantConfig::min_area, "Minimum area [m²]")
+         .def_readwrite("enable_adjoint", &SaintVenantConfig::enable_adjoint, "Use adjoint for gradients")
+         .def_readwrite("checkpoint_stride", &SaintVenantConfig::checkpoint_stride, "Checkpoint interval");
+     
+     py::class_<SaintVenantRouter>(m, "SaintVenantRouter",
+         R"doc(
+         Full dynamic Saint-Venant Equations (SVE) solver.
+         
+         Solves the 1D shallow water equations using SUNDIALS CVODES:
+         - Continuity: ∂A/∂t + ∂Q/∂x = q_lat
+         - Momentum: ∂Q/∂t + ∂(Q²/A)/∂x + gA∂h/∂x = gA(S₀ - Sf)
+         
+         Uses finite volume spatial discretization with Rusanov flux and
+         implicit BDF time integration for stability.
+         
+         This is the highest-fidelity routing option, suitable for benchmarking
+         simpler routing methods.
+         )doc")
+         .def(py::init<Network&, SaintVenantConfig>(),
+             py::arg("network"), py::arg("config") = SaintVenantConfig(),
+             "Create SVE router with network and configuration")
+         
+         // Core routing
+         .def("route_timestep", &SaintVenantRouter::route_timestep,
+             "Advance one timestep using CVODES")
+         .def("route", &SaintVenantRouter::route,
+             "Route multiple timesteps", py::arg("num_timesteps"))
+         
+         // State access
+         .def("set_lateral_inflow", &SaintVenantRouter::set_lateral_inflow,
+             "Set lateral inflow for a reach [m³/s]",
+             py::arg("reach_id"), py::arg("inflow"))
+         .def("get_discharge", &SaintVenantRouter::get_discharge,
+             "Get discharge at reach outlet [m³/s]",
+             py::arg("reach_id"))
+         .def("get_all_discharges", &SaintVenantRouter::get_all_discharges,
+             "Get discharge at all reach outlets")
+         .def("get_depth", &SaintVenantRouter::get_depth,
+             "Get water depth at reach outlet [m]",
+             py::arg("reach_id"))
+         .def("reset_state", &SaintVenantRouter::reset_state,
+             "Reset to initial conditions")
+         
+         // Gradient computation
+         .def("start_recording", &SaintVenantRouter::start_recording,
+             "Start recording for gradient computation")
+         .def("stop_recording", &SaintVenantRouter::stop_recording,
+             "Stop recording")
+         .def("record_output", &SaintVenantRouter::record_output,
+             "Record current output for gradient computation",
+             py::arg("reach_id"))
+         .def("compute_gradients_timeseries", &SaintVenantRouter::compute_gradients_timeseries,
+             "Compute gradients for timeseries (numerical for now)",
+             py::arg("reach_id"), py::arg("dL_dQ"))
+         .def("get_gradients", &SaintVenantRouter::get_gradients,
+             "Get accumulated gradients")
+         
+         // Properties
+         .def("current_time", &SaintVenantRouter::current_time,
+             "Current simulation time [s]")
+         .def_property_readonly("config", &SaintVenantRouter::config,
+             "Access configuration");
  
      // =========================================================================
      // Version info

@@ -32,14 +32,31 @@ namespace dmc {
 // ============================================================================
 
 /**
+ * @brief Routing method for Enzyme kernels
+ */
+enum class EnzymeRoutingMethod {
+    MUSKINGUM_CUNGE = 0,
+    LAG = 1,
+    IRF = 2,
+    KWT = 3,
+    DIFFUSIVE = 4
+};
+
+/**
  * @brief Extended router config with AD backend selection
  */
 struct UnifiedRouterConfig : public RouterConfig {
     ADBackend ad_backend = get_default_backend();
+    EnzymeRoutingMethod routing_method = EnzymeRoutingMethod::MUSKINGUM_CUNGE;
     
     // Enzyme-specific options
     bool enzyme_validate_against_codipack = false;  // Run both and compare
     double enzyme_gradient_tolerance = 1e-4;        // Tolerance for gradient comparison
+    
+    // Method-specific options
+    double kwt_gate_steepness_enzyme = 5.0;         // Steepness for KWT soft gates
+    double irf_shape_param = 2.5;                   // Gamma shape for IRF
+    int dw_num_nodes = 10;                          // Nodes per reach for diffusive wave
 };
 
 // ============================================================================
@@ -59,6 +76,7 @@ public:
     {
         network_.build_topology();
         initialize_arrays();
+        initialize_extended_state();
     }
     
     // =========== Core Routing ===========
@@ -70,24 +88,48 @@ public:
             lateral_inflows_[reach_id] = to_double(network_.get_reach(reach_id).lateral_inflow);
         }
         
-        // Call Enzyme kernel
-        enzyme::route_network_timestep(
-            n_reaches_,
-            topo_order_.data(),
-            downstream_idx_.data(),
-            upstream_counts_.data(),
-            upstream_offsets_.data(),
-            upstream_indices_.data(),
-            reach_props_.data(),
-            reach_states_.data(),
-            lateral_inflows_.data(),
-            config_.dt,
-            config_.num_substeps,
-            config_.min_flow,
-            config_.x_lower_bound,
-            config_.x_upper_bound,
-            Q_out_.data()
-        );
+        int method = static_cast<int>(config_.routing_method);
+        
+        if (method == 0) {
+            // Muskingum-Cunge uses existing optimized function
+            enzyme::route_network_timestep(
+                n_reaches_,
+                topo_order_.data(),
+                downstream_idx_.data(),
+                upstream_counts_.data(),
+                upstream_offsets_.data(),
+                upstream_indices_.data(),
+                reach_props_.data(),
+                reach_states_.data(),
+                lateral_inflows_.data(),
+                config_.dt,
+                config_.num_substeps,
+                config_.min_flow,
+                config_.x_lower_bound,
+                config_.x_upper_bound,
+                Q_out_.data()
+            );
+        } else {
+            // Use method-specific routing
+            enzyme::route_network_timestep_method(
+                method,
+                n_reaches_,
+                topo_order_.data(),
+                downstream_idx_.data(),
+                upstream_counts_.data(),
+                upstream_offsets_.data(),
+                upstream_indices_.data(),
+                reach_props_.data(),
+                reach_states_.data(),
+                extended_state_.data(),
+                lateral_inflows_.data(),
+                config_.dt,
+                config_.num_substeps,
+                config_.min_flow,
+                config_.kwt_gate_steepness_enzyme,
+                Q_out_.data()
+            );
+        }
         
         // Write back to network structure
         for (size_t i = 0; i < topo_order_.size(); ++i) {
@@ -100,6 +142,17 @@ public:
         }
         
         current_time_ += config_.dt;
+    }
+    
+    void set_routing_method(EnzymeRoutingMethod method) {
+        if (config_.routing_method != method) {
+            config_.routing_method = method;
+            initialize_extended_state();
+        }
+    }
+    
+    EnzymeRoutingMethod get_routing_method() const {
+        return config_.routing_method;
     }
     
     void route(int num_timesteps) {
@@ -214,6 +267,9 @@ public:
         current_time_ = 0.0;
         reset_gradients();
         
+        // Re-initialize extended state for non-MC methods
+        initialize_extended_state();
+        
         for (int reach_id : topo_order_) {
             Reach& reach = network_.get_reach(reach_id);
             reach.inflow_prev = reach.inflow_curr = Real(0);
@@ -290,10 +346,40 @@ private:
     
     std::vector<double> reach_props_;
     std::vector<double> reach_states_;
+    std::vector<double> extended_state_;   // For non-MC routing methods
     std::vector<double> lateral_inflows_;
     std::vector<double> Q_out_;
     
     GradientResult gradient_result_;
+    
+    void initialize_extended_state() {
+        int method = static_cast<int>(config_.routing_method);
+        
+        // Compute extended state size
+        int ext_state_size = 0;
+        switch (method) {
+            case 0: ext_state_size = 0; break;  // MC doesn't need extended state
+            case 1: ext_state_size = enzyme::LAG_STATE_SIZE; break;
+            case 2: ext_state_size = enzyme::IRF_STATE_SIZE; break;
+            case 3: ext_state_size = enzyme::KWT_STATE_SIZE; break;
+            case 4: ext_state_size = enzyme::DW_STATE_SIZE; break;
+        }
+        
+        if (ext_state_size > 0) {
+            extended_state_.resize(n_reaches_ * ext_state_size, 0.0);
+            enzyme::init_extended_state(
+                method,
+                n_reaches_,
+                reach_props_.data(),
+                extended_state_.data(),
+                config_.dt,
+                config_.irf_shape_param,
+                config_.dw_num_nodes
+            );
+        } else {
+            extended_state_.clear();
+        }
+    }
     
     void initialize_arrays() {
         topo_order_ = network_.topological_order();

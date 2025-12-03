@@ -437,6 +437,623 @@ inline void route_network_timestep(
 }
 
 // ============================================================================
+// Routing Method Enum
+// ============================================================================
+
+enum class RoutingMethod {
+    MUSKINGUM_CUNGE = 0,
+    LAG = 1,
+    IRF = 2,
+    KWT = 3,
+    DIFFUSIVE = 4
+};
+
+// ============================================================================
+// Lag Router Kernel
+// ============================================================================
+
+/// State for lag routing: [Q_buffer[0..max_lag], lag_steps, buffer_pos]
+constexpr int LAG_MAX_BUFFER = 100;  // Maximum lag in timesteps
+constexpr int LAG_STATE_SIZE = LAG_MAX_BUFFER + 2;  // buffer + lag_steps + pos
+
+/**
+ * @brief Initialize lag state for a reach
+ */
+DMC_HOST_DEVICE inline void lag_init(
+    double* state,        // [LAG_STATE_SIZE]
+    const double* props,  // [7]: length, slope, manning_n, ...
+    double dt
+) {
+    double length = props[0];
+    double slope = props[1];
+    double manning_n = props[2];
+    
+    // Velocity from Manning's equation with R_h = 1
+    double velocity = (1.0 / manning_n) * std::pow(1.0, 2.0/3.0) * std::sqrt(slope);
+    velocity = smooth_clamp(velocity, 0.1, 5.0);
+    
+    // Compute lag in timesteps
+    double travel_time = length / velocity;
+    int lag = static_cast<int>(travel_time / dt);
+    lag = std::max(1, std::min(lag, LAG_MAX_BUFFER - 1));
+    
+    // Store lag steps and reset buffer
+    for (int i = 0; i < LAG_MAX_BUFFER; ++i) {
+        state[i] = 0.0;
+    }
+    state[LAG_MAX_BUFFER] = static_cast<double>(lag);
+    state[LAG_MAX_BUFFER + 1] = 0.0;  // buffer position
+}
+
+/**
+ * @brief Lag routing kernel - simple time delay
+ */
+DMC_HOST_DEVICE inline void lag_kernel(
+    double* state,        // [LAG_STATE_SIZE] - MODIFIED
+    const double* props,  // [7]
+    double Q_in,          // Total inflow (upstream + lateral)
+    double dt,
+    double* Q_out
+) {
+    int lag = static_cast<int>(state[LAG_MAX_BUFFER]);
+    int pos = static_cast<int>(state[LAG_MAX_BUFFER + 1]);
+    
+    // Get delayed output
+    int out_pos = (pos + LAG_MAX_BUFFER - lag) % LAG_MAX_BUFFER;
+    *Q_out = state[out_pos];
+    
+    // Store new inflow
+    state[pos] = Q_in;
+    
+    // Advance position
+    state[LAG_MAX_BUFFER + 1] = static_cast<double>((pos + 1) % LAG_MAX_BUFFER);
+}
+
+// ============================================================================
+// IRF (Impulse Response Function) Kernel
+// ============================================================================
+
+/// State for IRF: [inflow_history[0..max_kernel], kernel_weights[0..max_kernel], kernel_size]
+constexpr int IRF_MAX_KERNEL = 50;  // Maximum kernel size
+constexpr int IRF_STATE_SIZE = IRF_MAX_KERNEL * 2 + 1;
+
+/**
+ * @brief Compute gamma PDF for IRF kernel
+ */
+DMC_HOST_DEVICE inline double gamma_pdf(double t, double k, double theta) {
+    if (t <= 0) return 0.0;
+    // gamma(t; k, θ) = t^(k-1) * exp(-t/θ) / (θ^k * Γ(k))
+    // Simplified: just use unnormalized shape, normalize later
+    return std::pow(t, k - 1.0) * std::exp(-t / theta);
+}
+
+/**
+ * @brief Initialize IRF kernel for a reach
+ */
+DMC_HOST_DEVICE inline void irf_init(
+    double* state,        // [IRF_STATE_SIZE]
+    const double* props,  // [7]: length, slope, manning_n, ...
+    double dt,
+    double shape_param    // Gamma shape parameter (typically 2.5)
+) {
+    double length = props[0];
+    double slope = props[1];
+    double manning_n = props[2];
+    
+    // Velocity from Manning's equation
+    double velocity = (1.0 / manning_n) * std::pow(1.0, 2.0/3.0) * std::sqrt(slope);
+    velocity = smooth_clamp(velocity, 0.1, 5.0);
+    
+    // Travel time = scale parameter for gamma
+    double travel_time = length / velocity;
+    double theta = travel_time / shape_param;  // Scale parameter
+    
+    // Compute kernel size needed (cover 99% of gamma mass)
+    double cutoff_time = 3.0 * travel_time;
+    int kernel_size = std::min(IRF_MAX_KERNEL, static_cast<int>(cutoff_time / dt) + 1);
+    kernel_size = std::max(3, kernel_size);
+    
+    // Build kernel weights
+    double sum = 0.0;
+    for (int i = 0; i < kernel_size; ++i) {
+        double t = (i + 0.5) * dt;  // Mid-point of timestep
+        double w = gamma_pdf(t, shape_param, theta);
+        state[IRF_MAX_KERNEL + i] = w;
+        sum += w;
+    }
+    
+    // Normalize kernel
+    if (sum > 0) {
+        for (int i = 0; i < kernel_size; ++i) {
+            state[IRF_MAX_KERNEL + i] /= sum;
+        }
+    }
+    
+    // Zero out rest of kernel
+    for (int i = kernel_size; i < IRF_MAX_KERNEL; ++i) {
+        state[IRF_MAX_KERNEL + i] = 0.0;
+    }
+    
+    // Initialize history to zero
+    for (int i = 0; i < IRF_MAX_KERNEL; ++i) {
+        state[i] = 0.0;
+    }
+    
+    // Store kernel size
+    state[IRF_MAX_KERNEL * 2] = static_cast<double>(kernel_size);
+}
+
+/**
+ * @brief IRF routing kernel - convolution with impulse response
+ */
+DMC_HOST_DEVICE inline void irf_kernel(
+    double* state,        // [IRF_STATE_SIZE] - MODIFIED
+    const double* props,  // [7]
+    double Q_in,          // Total inflow
+    double dt,
+    double* Q_out
+) {
+    int kernel_size = static_cast<int>(state[IRF_MAX_KERNEL * 2]);
+    
+    // Shift history (newest first)
+    for (int i = kernel_size - 1; i > 0; --i) {
+        state[i] = state[i - 1];
+    }
+    state[0] = Q_in;
+    
+    // Convolve history with kernel
+    double Q_conv = 0.0;
+    for (int i = 0; i < kernel_size; ++i) {
+        Q_conv += state[i] * state[IRF_MAX_KERNEL + i];
+    }
+    
+    *Q_out = smooth_max(Q_conv, 1e-6);
+}
+
+// ============================================================================
+// KWT (Kinematic Wave Tracking) Kernel - Soft-Gated
+// ============================================================================
+
+/// Parcel structure: [volume, position, celerity, remaining]
+constexpr int PARCEL_SIZE = 4;
+constexpr int KWT_MAX_PARCELS = 20;
+constexpr int KWT_STATE_SIZE = KWT_MAX_PARCELS * PARCEL_SIZE + 2;  // +2 for num_parcels, storage
+
+/**
+ * @brief Soft sigmoid gate function
+ */
+DMC_HOST_DEVICE inline double soft_gate(double x, double threshold, double steepness) {
+    return 1.0 / (1.0 + std::exp(-steepness * (x - threshold)));
+}
+
+/**
+ * @brief Initialize KWT state
+ */
+DMC_HOST_DEVICE inline void kwt_init(double* state) {
+    for (int i = 0; i < KWT_STATE_SIZE; ++i) {
+        state[i] = 0.0;
+    }
+}
+
+/**
+ * @brief KWT routing kernel with soft gates
+ */
+DMC_HOST_DEVICE inline void kwt_kernel(
+    double* state,        // [KWT_STATE_SIZE] - MODIFIED
+    const double* props,  // [7]: length, slope, manning_n, ...
+    double Q_in,          // Total inflow
+    double dt,
+    double gate_steepness,
+    double* Q_out
+) {
+    double length = props[0];
+    double slope = props[1];
+    double manning_n = props[2];
+    double width_coef = props[3];
+    double width_exp = props[4];
+    
+    int num_parcels = static_cast<int>(state[KWT_MAX_PARCELS * PARCEL_SIZE]);
+    double storage = state[KWT_MAX_PARCELS * PARCEL_SIZE + 1];
+    
+    // Compute celerity based on current flow
+    double Q_ref = smooth_max(Q_in, storage / dt, 1e-6);
+    Q_ref = smooth_max(Q_ref, 0.01);
+    
+    double width = width_coef * ad_safe_pow(Q_ref, width_exp);
+    width = smooth_max(width, 0.5);
+    
+    // Velocity from Manning's: v = (1/n) * R^(2/3) * S^(1/2)
+    // Approximate R ~ Q / (width * v) -> solve iteratively or use depth
+    double velocity = (1.0 / manning_n) * std::pow(1.0, 2.0/3.0) * std::sqrt(slope);
+    velocity = smooth_clamp(velocity, 0.1, 5.0);
+    
+    // Kinematic wave celerity c = 5/3 * v
+    double celerity = (5.0 / 3.0) * velocity;
+    celerity = smooth_clamp(celerity, 0.1, 5.0);
+    
+    // Add new parcel for incoming water
+    double inflow_volume = Q_in * dt;
+    if (inflow_volume > 1e-6 && num_parcels < KWT_MAX_PARCELS) {
+        int idx = num_parcels * PARCEL_SIZE;
+        state[idx + 0] = inflow_volume;  // volume
+        state[idx + 1] = 0.0;            // position (at inlet)
+        state[idx + 2] = celerity;       // celerity
+        state[idx + 3] = 1.0;            // remaining fraction
+        num_parcels++;
+    }
+    
+    // Move parcels and compute outflow
+    double outflow = 0.0;
+    int active_parcels = 0;
+    
+    for (int p = 0; p < num_parcels; ++p) {
+        int idx = p * PARCEL_SIZE;
+        double volume = state[idx + 0];
+        double position = state[idx + 1];
+        double parcel_celerity = state[idx + 2];
+        double remaining = state[idx + 3];
+        
+        if (volume < 1e-10 || remaining < 0.01) continue;
+        
+        // Move parcel
+        position += parcel_celerity * dt;
+        
+        // Soft gate: fraction exiting
+        double exit_fraction = soft_gate(position, length, gate_steepness / length);
+        double newly_exited = remaining * exit_fraction;
+        
+        // Add to outflow
+        outflow += volume * newly_exited / dt;
+        
+        // Update parcel
+        state[idx + 1] = position;
+        state[idx + 3] = remaining * (1.0 - exit_fraction);
+        
+        // Keep active parcels
+        if (state[idx + 3] > 0.01) {
+            if (active_parcels != p) {
+                // Compact: move to active position
+                int new_idx = active_parcels * PARCEL_SIZE;
+                for (int k = 0; k < PARCEL_SIZE; ++k) {
+                    state[new_idx + k] = state[idx + k];
+                }
+            }
+            active_parcels++;
+        }
+    }
+    
+    // Update parcel count
+    state[KWT_MAX_PARCELS * PARCEL_SIZE] = static_cast<double>(active_parcels);
+    
+    // Update storage
+    double new_storage = 0.0;
+    for (int p = 0; p < active_parcels; ++p) {
+        int idx = p * PARCEL_SIZE;
+        new_storage += state[idx + 0] * state[idx + 3];
+    }
+    state[KWT_MAX_PARCELS * PARCEL_SIZE + 1] = new_storage;
+    
+    *Q_out = smooth_max(outflow, 1e-6);
+}
+
+// ============================================================================
+// Diffusive Wave Kernel
+// ============================================================================
+
+// ============================================================================
+// Diffusive Wave Kernel - Implicit Solver with IFT Gradients
+// ============================================================================
+
+/// State for implicit diffusive wave: Q at nodes + node count
+constexpr int DW_MAX_NODES = 10;
+constexpr int DW_STATE_SIZE = DW_MAX_NODES + 1;  // Q[0..n-1] + n_nodes
+
+/**
+ * @brief Thomas algorithm for tridiagonal systems
+ * 
+ * Solves A*x = rhs where A is tridiagonal.
+ * Uses workspace to avoid modifying inputs (important for AD).
+ * Includes numerical safeguards for stability.
+ */
+DMC_HOST_DEVICE inline void thomas_solve(
+    int n,
+    const double* lower,
+    const double* diag,
+    const double* upper,
+    const double* rhs,
+    double* x,
+    double* work
+) {
+    double* c_star = work;        // Modified upper diagonal
+    double* d_star = work + n;    // Modified RHS
+    
+    // Forward sweep with numerical safeguards
+    double denom = diag[0];
+    if (std::abs(denom) < 1e-10) denom = (denom >= 0) ? 1e-10 : -1e-10;
+    c_star[0] = upper[0] / denom;
+    d_star[0] = rhs[0] / denom;
+    
+    for (int i = 1; i < n; ++i) {
+        denom = diag[i] - lower[i] * c_star[i-1];
+        // Numerical safety - ensure we don't divide by tiny numbers
+        if (std::abs(denom) < 1e-10) denom = (denom >= 0) ? 1e-10 : -1e-10;
+        
+        if (i < n - 1) {
+            c_star[i] = upper[i] / denom;
+        }
+        d_star[i] = (rhs[i] - lower[i] * d_star[i-1]) / denom;
+    }
+    
+    // Back substitution
+    x[n-1] = d_star[n-1];
+    for (int i = n - 2; i >= 0; --i) {
+        x[i] = d_star[i] - c_star[i] * x[i+1];
+    }
+}
+
+/**
+ * @brief Initialize implicit diffusive wave state
+ */
+DMC_HOST_DEVICE inline void diffusive_init(
+    double* state,        // [DW_STATE_SIZE]
+    const double* props,  // [7]
+    int num_nodes
+) {
+    num_nodes = std::min(num_nodes, DW_MAX_NODES);
+    num_nodes = std::max(num_nodes, 3);
+    
+    // Initialize Q to small positive value at all nodes
+    for (int i = 0; i < DW_MAX_NODES; ++i) {
+        state[i] = 0.1;  // Start with reasonable base flow
+    }
+    state[DW_MAX_NODES] = static_cast<double>(num_nodes);
+}
+
+/**
+ * @brief Implicit Diffusive Wave routing kernel
+ * 
+ * Solves the diffusive wave equation:
+ *   ∂Q/∂t + c·∂Q/∂x = D·∂²Q/∂x²
+ * 
+ * Using implicit (backward Euler) finite differences with careful
+ * coefficient bounding for numerical stability during optimization.
+ */
+DMC_HOST_DEVICE inline void diffusive_kernel(
+    double* state,        // [DW_STATE_SIZE] - MODIFIED
+    const double* props,  // [7]
+    double Q_in,          // Upstream boundary condition [m³/s]
+    double lateral,       // Distributed lateral inflow [m³/s]
+    double dt,
+    int /* max_substeps */,
+    double* Q_out
+) {
+    double length = props[0];
+    double slope = props[1];
+    double manning_n = props[2];
+    double width_coef = props[3];
+    double width_exp = props[4];
+    
+    int n = static_cast<int>(state[DW_MAX_NODES]);
+    double dx = length / (n - 1);
+    
+    // Compute average Q across reach for reference (more stable than outlet only)
+    double Q_sum = 0.0;
+    for (int i = 0; i < n; ++i) {
+        Q_sum += state[i];
+    }
+    double Q_ref = Q_sum / n;
+    Q_ref = smooth_max(Q_ref, Q_in);
+    Q_ref = smooth_max(Q_ref, 1.0);  // Ensure reasonable reference
+    
+    // Channel geometry with safe bounds
+    double width = width_coef * ad_safe_pow(Q_ref, width_exp);
+    width = smooth_clamp(width, 5.0, 200.0);  // Reasonable river width bounds
+    
+    // Hydraulic radius approximation
+    double depth = 0.3 * ad_safe_pow(Q_ref, 0.25);
+    depth = smooth_clamp(depth, 0.3, 5.0);
+    double R_h = width * depth / (width + 2.0 * depth);
+    R_h = smooth_clamp(R_h, 0.2, 3.0);
+    
+    // Velocity from Manning's equation with bounded slope
+    double S = smooth_clamp(slope, 1e-4, 0.1);
+    double velocity = (1.0 / manning_n) * ad_safe_pow(R_h, 2.0/3.0) * std::sqrt(S);
+    velocity = smooth_clamp(velocity, 0.1, 3.0);
+    
+    // Wave celerity
+    double celerity = (5.0 / 3.0) * velocity;
+    celerity = smooth_clamp(celerity, 0.2, 5.0);
+    
+    // Diffusion coefficient with bounds
+    double diffusion = Q_ref / (2.0 * width * S);
+    diffusion = smooth_clamp(diffusion, 10.0, 500.0);
+    
+    // Courant and diffusion numbers - LIMIT for stability
+    double Cr = celerity * dt / dx;
+    double Df = diffusion * dt / (dx * dx);
+    
+    // Limit dimensionless numbers to ensure diagonal dominance
+    // Even implicit methods need reasonable coefficient ratios
+    Cr = smooth_clamp(Cr, 0.1, 10.0);
+    Df = smooth_clamp(Df, 0.01, 5.0);
+    
+    // Build tridiagonal system with guaranteed diagonal dominance
+    double lower[DW_MAX_NODES];
+    double diag[DW_MAX_NODES];
+    double upper[DW_MAX_NODES];
+    double rhs[DW_MAX_NODES];
+    double Q_new[DW_MAX_NODES];
+    double work[DW_MAX_NODES * 2];
+    
+    double lateral_per_node = lateral / n;
+    
+    // Upstream boundary: Dirichlet
+    lower[0] = 0.0;
+    diag[0] = 1.0;
+    upper[0] = 0.0;
+    rhs[0] = smooth_max(Q_in + lateral_per_node, 0.01);
+    
+    // Interior nodes
+    for (int i = 1; i < n - 1; ++i) {
+        lower[i] = -(Cr + Df);
+        diag[i] = 1.0 + Cr + 2.0 * Df;
+        upper[i] = -Df;
+        rhs[i] = smooth_max(state[i], 0.01) + lateral_per_node;
+    }
+    
+    // Downstream boundary: zero-gradient outflow
+    lower[n-1] = -(Cr + Df);
+    diag[n-1] = 1.0 + Cr + Df;
+    upper[n-1] = 0.0;
+    rhs[n-1] = smooth_max(state[n-1], 0.01) + lateral_per_node;
+    
+    // Solve tridiagonal system
+    thomas_solve(n, lower, diag, upper, rhs, Q_new, work);
+    
+    // Update state with bounds to prevent runaway values
+    for (int i = 0; i < n; ++i) {
+        // Clamp to physically reasonable range
+        state[i] = smooth_clamp(Q_new[i], 0.001, 10000.0);
+    }
+    
+    *Q_out = state[n-1];
+}
+
+// ============================================================================
+// Unified Network Routing with Method Selection
+// ============================================================================
+
+/**
+ * @brief Route network with selected method
+ * 
+ * @param method          Routing method (0=MC, 1=Lag, 2=IRF, 3=KWT, 4=Diffusive)
+ * @param extended_state  Extended state array for method-specific state
+ *                        Size: n_reaches * max(LAG_STATE_SIZE, IRF_STATE_SIZE, KWT_STATE_SIZE, DW_STATE_SIZE)
+ */
+inline void route_network_timestep_method(
+    int method,
+    int n_reaches,
+    const int* topo_order,
+    const int* downstream_idx,
+    const int* upstream_counts,
+    const int* upstream_offsets,
+    const int* upstream_indices,
+    const double* reach_props,
+    double* reach_states,       // Basic state [n_reaches * 4]
+    double* extended_state,     // Method-specific state
+    const double* lateral_inflows,
+    double dt,
+    int num_substeps,
+    double min_flow,
+    double gate_steepness,      // For KWT
+    double* Q_out
+) {
+    // Determine extended state size per reach
+    int ext_state_size = 0;
+    switch (method) {
+        case 0: ext_state_size = 0; break;  // MC uses reach_states
+        case 1: ext_state_size = LAG_STATE_SIZE; break;
+        case 2: ext_state_size = IRF_STATE_SIZE; break;
+        case 3: ext_state_size = KWT_STATE_SIZE; break;
+        case 4: ext_state_size = DW_STATE_SIZE; break;
+    }
+    
+    // Process reaches in topological order
+    for (int i = 0; i < n_reaches; ++i) {
+        int reach_id = topo_order[i];
+        
+        // Gather upstream inflow
+        double upstream_inflow = 0.0;
+        int n_upstream = upstream_counts[reach_id];
+        int offset = upstream_offsets[reach_id];
+        
+        for (int u = 0; u < n_upstream; ++u) {
+            int up_reach = upstream_indices[offset + u];
+            upstream_inflow += Q_out[up_reach];
+        }
+        
+        double Q_in = upstream_inflow + lateral_inflows[reach_id];
+        const double* props = &reach_props[reach_id * NUM_REACH_PROPS_FULL];
+        double Q_new = 0.0;
+        
+        switch (method) {
+            case 0: {
+                // Muskingum-Cunge
+                double* state = &reach_states[reach_id * NUM_REACH_STATE];
+                state[0] = state[1];
+                state[1] = upstream_inflow;
+                state[3] = lateral_inflows[reach_id];
+                muskingum_cunge_substepped(state, props, dt, num_substeps,
+                                           min_flow, 0.0, 0.5, &Q_new);
+                state[2] = Q_new;
+                break;
+            }
+            case 1: {
+                // Lag
+                double* ext = &extended_state[reach_id * ext_state_size];
+                lag_kernel(ext, props, Q_in, dt, &Q_new);
+                break;
+            }
+            case 2: {
+                // IRF
+                double* ext = &extended_state[reach_id * ext_state_size];
+                irf_kernel(ext, props, Q_in, dt, &Q_new);
+                break;
+            }
+            case 3: {
+                // KWT
+                double* ext = &extended_state[reach_id * ext_state_size];
+                kwt_kernel(ext, props, Q_in, dt, gate_steepness, &Q_new);
+                break;
+            }
+            case 4: {
+                // Diffusive
+                double* ext = &extended_state[reach_id * ext_state_size];
+                diffusive_kernel(ext, props, upstream_inflow, lateral_inflows[reach_id],
+                                 dt, num_substeps, &Q_new);
+                break;
+            }
+        }
+        
+        Q_out[reach_id] = Q_new;
+    }
+}
+
+/**
+ * @brief Initialize extended state for a method
+ */
+inline void init_extended_state(
+    int method,
+    int n_reaches,
+    const double* reach_props,
+    double* extended_state,
+    double dt,
+    double irf_shape_param = 2.5,
+    int dw_num_nodes = 10
+) {
+    int ext_state_size = 0;
+    switch (method) {
+        case 1: ext_state_size = LAG_STATE_SIZE; break;
+        case 2: ext_state_size = IRF_STATE_SIZE; break;
+        case 3: ext_state_size = KWT_STATE_SIZE; break;
+        case 4: ext_state_size = DW_STATE_SIZE; break;
+        default: return;  // MC doesn't need extended state
+    }
+    
+    for (int i = 0; i < n_reaches; ++i) {
+        const double* props = &reach_props[i * NUM_REACH_PROPS_FULL];
+        double* ext = &extended_state[i * ext_state_size];
+        
+        switch (method) {
+            case 1: lag_init(ext, props, dt); break;
+            case 2: irf_init(ext, props, dt, irf_shape_param); break;
+            case 3: kwt_init(ext); break;
+            case 4: diffusive_init(ext, props, dw_num_nodes); break;
+        }
+    }
+}
+
+// ============================================================================
 // Loss and Gradient Computation
 // ============================================================================
 
@@ -1028,14 +1645,6 @@ DMC_HOST_DEVICE inline double compute_kwt_celerity(
     // Kinematic wave celerity: c = 5/3 * v
     double celerity = (5.0 / 3.0) * velocity;
     return smooth_clamp(celerity, 0.1, 5.0);
-}
-
-/**
- * @brief Soft gate function (smooth step)
- */
-DMC_HOST_DEVICE inline double soft_gate(double x, double threshold, double steepness) {
-    double z = (x - threshold) * steepness;
-    return sigmoid(z);
 }
 
 /**

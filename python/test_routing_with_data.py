@@ -260,6 +260,7 @@ def plot_hydrographs(times: np.ndarray,
         'irf': '#2ca02c',
         'kwt': '#d62728',
         'diffusive': '#9467bd',
+        'sve': '#8c564b',  # Brown for Saint-Venant
     }
     
     # Top panel: All hydrographs
@@ -474,6 +475,7 @@ ROUTER_CLASSES = {
     'irf': 'IRFRouter',
     'kwt': 'SoftGatedKWT',
     'diffusive': 'DiffusiveWaveIFT',
+    'sve': 'SaintVenantRouter',  # Full dynamic Saint-Venant
 }
 
 
@@ -503,7 +505,7 @@ class RoutingTest:
         Run a routing method and return outlet discharge timeseries.
         
         Args:
-            method: One of 'mc', 'lag', 'irf', 'kwt', 'diffusive'
+            method: One of 'mc', 'lag', 'irf', 'kwt', 'diffusive', 'sve'
             **kwargs: Method-specific parameters
             
         Returns:
@@ -512,19 +514,27 @@ class RoutingTest:
         if not HAS_DMC:
             raise ImportError("pydmc_route required")
         
-        # Create router config
-        config = dmc.RouterConfig()
-        config.dt = self.dt
-        config.enable_gradients = kwargs.get('enable_gradients', False)
-        
-        # Method-specific config
-        if method == 'mc':
-            config.num_substeps = kwargs.get('num_substeps', 4)
-        elif method == 'irf':
-            config.irf_shape_param = kwargs.get('shape_param', 2.5)
-            config.irf_max_kernel_size = kwargs.get('kernel_size', 100)
-        elif method == 'kwt':
-            config.kwt_gate_steepness = kwargs.get('gate_steepness', 5.0)
+        # Create router config based on method
+        if method == 'sve':
+            # Saint-Venant uses its own config class
+            config = dmc.SaintVenantConfig()
+            config.dt = self.dt
+            config.n_nodes = kwargs.get('n_nodes', 10)
+            config.initial_depth = kwargs.get('initial_depth', 0.5)
+            config.initial_velocity = kwargs.get('initial_velocity', 0.1)
+        else:
+            config = dmc.RouterConfig()
+            config.dt = self.dt
+            config.enable_gradients = kwargs.get('enable_gradients', False)
+            
+            # Method-specific config
+            if method == 'mc':
+                config.num_substeps = kwargs.get('num_substeps', 4)
+            elif method == 'irf':
+                config.irf_shape_param = kwargs.get('shape_param', 2.5)
+                config.irf_max_kernel_size = kwargs.get('kernel_size', 100)
+            elif method == 'kwt':
+                config.kwt_gate_steepness = kwargs.get('gate_steepness', 5.0)
         
         # Create router
         router_class_name = ROUTER_CLASSES.get(method)
@@ -579,53 +589,81 @@ def optimize_routing_pytorch(network: 'dmc.Network',
                              method: str = 'mc',
                              n_epochs: int = 50,
                              lr: float = 0.01,
-                             dt: float = 3600.0) -> Dict:
+                             dt: float = 3600.0,
+                             outlet_reach: int = None) -> Dict:
     """
-    Optimize routing parameters using PyTorch with dRoute's AD gradients.
+    Optimize routing parameters using PyTorch Adam optimizer with CoDiPack AD.
     
-    This uses dRoute's CoDiPack-based AD to compute gradients, then passes
-    them to PyTorch for the optimization step.
+    Uses dRoute's CoDiPack-based routers with proper timeseries gradient
+    accumulation. The record_output() method stores each timestep's discharge
+    on the AD tape, and compute_gradients_timeseries() backprops through all
+    timesteps in a single reverse pass.
     
     Args:
         network: River network
         runoff: Lateral inflows (n_timesteps, n_reaches)
         observed: Observed outlet discharge (n_timesteps,)
-        method: Routing method
+        method: Routing method ('mc', 'lag', 'irf', 'kwt', 'diffusive')
         n_epochs: Number of optimization epochs
         lr: Learning rate
         dt: Timestep in seconds
+        outlet_reach: Index of outlet reach (auto-detected if None)
         
     Returns:
         Dictionary with optimized parameters and final metrics
     """
-    if not HAS_TORCH or not HAS_DMC:
-        raise ImportError("PyTorch and pydmc_route required")
+    if not HAS_TORCH:
+        raise ImportError("PyTorch required for optimization")
+    if not HAS_DMC:
+        raise ImportError("pydmc_route required")
     
     n_timesteps = runoff.shape[0]
     n_reaches = runoff.shape[1]
-    outlet_reach = n_reaches - 1
     
-    # Create config
+    # Find outlet if not specified
+    if outlet_reach is None:
+        outlet_reach = 0
+        for i in range(n_reaches):
+            reach = network.get_reach(i)
+            if reach.downstream_junction_id < 0:
+                outlet_reach = i
+                break
+    
+    # Create config with gradients enabled
     config = dmc.RouterConfig()
     config.dt = dt
     config.enable_gradients = True
     
-    # Create router
+    # Get router class
     RouterClass = getattr(dmc, ROUTER_CLASSES[method])
     
-    # Initialize learnable parameters
+    # Check if router supports timeseries gradients
+    has_timeseries_grad = hasattr(RouterClass, '__init__') and method == 'mc'
+    # TODO: Add timeseries gradient support to other routers
+    
+    # Initialize learnable parameters in PyTorch
     log_manning_n = torch.tensor(
-        [np.log(network.get_reach(i).manning_n) for i in range(n_reaches)],
+        [np.log(max(network.get_reach(i).manning_n, 0.01)) 
+         for i in range(n_reaches)],
+        dtype=torch.float64,
         requires_grad=True
     )
     
+    # PyTorch Adam optimizer
     optimizer = torch.optim.Adam([log_manning_n], lr=lr)
     
     print(f"\nOptimizing {method.upper()} routing...")
     print(f"  {n_reaches} reaches, {n_timesteps} timesteps")
+    if has_timeseries_grad:
+        print(f"  Using CoDiPack timeseries AD gradients")
+    else:
+        print(f"  Using numerical gradients (CoDiPack timeseries not available for {method})")
     
     losses = []
     start_time = time.time()
+    
+    # Finite difference step size (for non-MC methods)
+    eps_fd = 0.01
     
     for epoch in range(n_epochs):
         optimizer.zero_grad()
@@ -633,54 +671,106 @@ def optimize_routing_pytorch(network: 'dmc.Network',
         # Update network parameters from PyTorch tensor
         manning_n = torch.exp(log_manning_n)
         for i in range(n_reaches):
-            network.get_reach(i).manning_n = manning_n[i].item()
+            network.get_reach(i).manning_n = float(manning_n[i].item())
         
-        # Create fresh router (reinitializes with new parameters)
-        router = RouterClass(network, config)
-        router.start_recording()
+        if has_timeseries_grad:
+            # === CoDiPack AD Path ===
+            # Create fresh router with AD enabled
+            router = RouterClass(network, config)
+            router.start_recording()
+            
+            # Forward pass - record output at each timestep
+            sim = np.zeros(n_timesteps)
+            for t in range(n_timesteps):
+                for r in range(n_reaches):
+                    router.set_lateral_inflow(r, float(runoff[t, r]))
+                router.route_timestep()
+                router.record_output(outlet_reach)  # Record for AD
+                sim[t] = router.get_discharge(outlet_reach)
+            
+            router.stop_recording()
+            
+            # Compute MSE loss
+            mse = np.mean((sim - observed) ** 2)
+            losses.append(mse)
+            
+            # Compute dL/dQ for each timestep: dMSE/dQ_t = 2*(sim_t - obs_t)/T
+            dL_dQ = (2.0 / n_timesteps) * (sim - observed)
+            
+            # Backprop through entire timeseries
+            router.compute_gradients_timeseries(outlet_reach, dL_dQ.tolist())
+            
+            # Get gradients from CoDiPack
+            grads = router.get_gradients()
+            
+            # Transfer to PyTorch
+            grad_manning = np.array([
+                grads.get(f"reach_{i}_manning_n", 0.0) for i in range(n_reaches)
+            ])
+            
+            # Chain rule for log transform: d/d(log_n) = d/d(n) * n
+            log_manning_n.grad = torch.tensor(
+                grad_manning * manning_n.detach().numpy(),
+                dtype=torch.float64
+            )
+            
+        else:
+            # === Numerical Gradient Path (for non-MC methods) ===
+            def run_sim(log_n_np):
+                for i in range(n_reaches):
+                    network.get_reach(i).manning_n = float(np.exp(log_n_np[i]))
+                router = RouterClass(network, config)
+                sim = np.zeros(n_timesteps)
+                for t in range(n_timesteps):
+                    for r in range(n_reaches):
+                        router.set_lateral_inflow(r, float(runoff[t, r]))
+                    router.route_timestep()
+                    sim[t] = router.get_discharge(outlet_reach)
+                return np.mean((sim - observed) ** 2), sim
+            
+            log_n_np = log_manning_n.detach().numpy().copy()
+            base_loss, sim = run_sim(log_n_np)
+            losses.append(base_loss)
+            
+            # Numerical gradients
+            grad_np = np.zeros(n_reaches)
+            for i in range(n_reaches):
+                log_n_np[i] += eps_fd
+                loss_plus, _ = run_sim(log_n_np)
+                log_n_np[i] -= 2 * eps_fd
+                loss_minus, _ = run_sim(log_n_np)
+                log_n_np[i] += eps_fd
+                grad_np[i] = (loss_plus - loss_minus) / (2 * eps_fd)
+            
+            log_manning_n.grad = torch.tensor(grad_np, dtype=torch.float64)
+            mse = base_loss
         
-        # Forward pass
-        sim = np.zeros(n_timesteps)
-        for t in range(n_timesteps):
-            for r in range(n_reaches):
-                router.set_lateral_inflow(r, float(runoff[t, r]))
-            router.route_timestep()
-            sim[t] = router.get_discharge(outlet_reach)
-        
-        router.stop_recording()
-        
-        # Compute loss (MSE)
-        mse = np.mean((sim - observed) ** 2)
-        losses.append(mse)
-        
-        # Get gradients from dRoute
-        # dL/dQ_outlet = 2 * (sim - obs) / n for MSE
-        dL_dQ = 2.0 * (sim[-1] - observed[-1]) / n_timesteps
-        router.compute_gradients([outlet_reach], [dL_dQ])
-        grads = router.get_gradients()
-        
-        # Transfer gradients to PyTorch
-        grad_manning = np.array([
-            grads.get(f"reach_{i}_manning_n", 0.0) for i in range(n_reaches)
-        ])
-        
-        # Chain rule for log transform: d/d(log_n) = d/d(n) * n
-        log_manning_n.grad = torch.tensor(
-            grad_manning * manning_n.detach().numpy()
-        )
-        
-        # Update parameters
+        # Adam update step
         optimizer.step()
         
-        if (epoch + 1) % 10 == 0 or epoch == 0:
+        # Clamp to reasonable range
+        with torch.no_grad():
+            log_manning_n.clamp_(np.log(0.01), np.log(0.2))
+        
+        # Progress output
+        current_nse = nse(sim, observed)
+        if (epoch + 1) % max(1, n_epochs // 10) == 0 or epoch == 0:
             print(f"  Epoch {epoch+1:3d}/{n_epochs}: MSE = {mse:.4f}, "
-                  f"NSE = {nse(sim, observed):.3f}")
+                  f"NSE = {current_nse:.3f}")
     
     elapsed = time.time() - start_time
     
-    # Final simulation
+    # Final simulation with optimized parameters
+    final_manning = torch.exp(log_manning_n).detach().numpy()
+    for i in range(n_reaches):
+        network.get_reach(i).manning_n = float(final_manning[i])
+    
+    config_final = dmc.RouterConfig()
+    config_final.dt = dt
+    config_final.enable_gradients = False
+    router = RouterClass(network, config_final)
+    
     sim_final = np.zeros(n_timesteps)
-    router = RouterClass(network, config)
     for t in range(n_timesteps):
         for r in range(n_reaches):
             router.set_lateral_inflow(r, float(runoff[t, r]))
@@ -695,9 +785,10 @@ def optimize_routing_pytorch(network: 'dmc.Network',
         'rmse': rmse(sim_final, observed),
         'pbias': pbias(sim_final, observed),
         'training_time': elapsed,
-        'final_loss': losses[-1],
-        'optimized_manning_n': torch.exp(log_manning_n).detach().numpy(),
+        'final_loss': losses[-1] if losses else 0.0,
+        'optimized_manning_n': final_manning,
         'simulated': sim_final,
+        'losses': np.array(losses),
     }
     
     return results
@@ -1073,10 +1164,13 @@ def run_tests(data_dir: Optional[Path] = None,
         print("="*60)
         
         for method in methods:
-            if method in ['kwt']:  # KWT uses SoftGatedKWT which has gradient support
-                continue  # Skip for now due to different gradient interface
             
             try:
+                # SVE doesn't support fast Enzyme mode
+                if method == 'sve' and fast:
+                    print(f"\n  Skipping {method.upper()} - not supported in fast Enzyme mode")
+                    continue
+                
                 # Use the loaded network (or create fresh synthetic one)
                 if network is not None:
                     # Reset state on existing network
@@ -1088,15 +1182,30 @@ def run_tests(data_dir: Optional[Path] = None,
                     # Use fast Enzyme-based optimization
                     start_time = time.time()
                     
-                    # Use the C++ enzyme optimize function directly
-                    router = dmc.enzyme.EnzymeRouter(opt_network, dt=3600.0, num_substeps=4)
+                    # Map method name to method index
+                    method_map = {
+                        'mc': 0,
+                        'lag': 1,
+                        'irf': 2,
+                        'kwt': 3,
+                        'diffusive': 4
+                    }
+                    method_idx = method_map.get(method.lower(), 0)
+                    
+                    # Use the C++ enzyme optimize function directly with correct method
+                    router = dmc.enzyme.EnzymeRouter(
+                        opt_network, 
+                        dt=3600.0, 
+                        num_substeps=4,
+                        method=method_idx
+                    )
                     
                     opt_result = dmc.enzyme.optimize(
                         router,
                         runoff_subset.astype(np.float64),
                         obs_subset.astype(np.float64),
                         outlet_idx,
-                        n_epochs=1,
+                        n_epochs=30,
                         lr=0.1,
                         eps=0.01,
                         verbose=True
@@ -1131,7 +1240,7 @@ def run_tests(data_dir: Optional[Path] = None,
                         continue
                     opt_results = optimize_routing_pytorch(
                         opt_network, runoff_subset, obs_subset,
-                        method=method, n_epochs=1, lr=0.05
+                        method=method, n_epochs=30, lr=0.05, outlet_reach=outlet_idx
                     )
                 
                 results[f'{method}_optimized'] = opt_results
@@ -1220,10 +1329,19 @@ def main():
     parser.add_argument(
         '--methods', nargs='+',
         default=['mc', 'lag', 'irf', 'kwt', 'diffusive'],
-        help='Routing methods to test'
+        help='Routing methods to test (options: mc, lag, irf, kwt, diffusive, sve)'
+    )
+    parser.add_argument(
+        '--sve', action='store_true',
+        help='Include Saint-Venant benchmark (slower, high-fidelity)'
     )
     
     args = parser.parse_args()
+    
+    # Add SVE to methods if requested
+    methods = args.methods.copy()
+    if args.sve and 'sve' not in methods:
+        methods.append('sve')
     
     # Run tests
     results = run_tests(
@@ -1232,7 +1350,7 @@ def main():
         fast=args.fast,
         skip_years=args.skip_years,
         max_years=args.max_years,
-        methods=args.methods
+        methods=methods
     )
     
     return results
