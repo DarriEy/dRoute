@@ -346,7 +346,7 @@ inline SaintVenantRouter::SaintVenantRouter(Network& network, SaintVenantConfig 
     // Set max steps
     flag = CVodeSetMaxNumSteps(cvode_mem_, config_.max_steps);
 #else
-    std::cerr << "Warning: SUNDIALS not enabled, using fallback explicit solver" << std::endl;
+    std::cerr << "Warning: SUNDIALS not enabled, using fallback RK4 solver (slower)" << std::endl;
 #endif
 }
 
@@ -601,24 +601,80 @@ inline void SaintVenantRouter::route_timestep() {
     
     current_time_ = tret;
 #else
-    // Fallback: simple explicit Euler (not recommended for real use)
+    // Fallback: explicit RK4 with CFL-based substepping
+    // Note: This is slower and less accurate than SUNDIALS, but works without dependencies
+    
     std::vector<double> y(total_state_size_);
-    std::vector<double> ydot(total_state_size_);
+    std::vector<double> k1(total_state_size_);
+    std::vector<double> k2(total_state_size_);
+    std::vector<double> k3(total_state_size_);
+    std::vector<double> k4(total_state_size_);
+    std::vector<double> y_temp(total_state_size_);
     
     pack_state(y.data());
     
-    // Sub-step for stability
-    int n_sub = 100;
+    // Estimate CFL-stable timestep
+    // For SVE: dt <= CFL * dx / (|u| + sqrt(g*h))
+    // Use conservative CFL = 0.5
+    double min_dx = 1e10;
+    double max_wave_speed = 0.1;
+    
+    const auto& topo_order = network_.topological_order();
+    for (size_t r = 0; r < reach_geometry_.size(); ++r) {
+        const Reach& reach = network_.get_reach(topo_order[r]);
+        double dx = reach.length / (config_.n_nodes - 1);
+        min_dx = std::min(min_dx, dx);
+        
+        // Estimate wave speed from current state
+        int off = reach_state_offset_[r];
+        for (int j = 0; j < config_.n_nodes; ++j) {
+            double A = std::max(y[off + 2*j], config_.min_area);
+            double Q = y[off + 2*j + 1];
+            double W = reach_geometry_[r].width_from_area(A);
+            double h = reach_geometry_[r].depth_from_area(A, W);
+            double u = Q / A;
+            double c = std::sqrt(config_.g * h);
+            max_wave_speed = std::max(max_wave_speed, std::abs(u) + c);
+        }
+    }
+    
+    double dt_cfl = 0.5 * min_dx / max_wave_speed;
+    int n_sub = std::max(10, static_cast<int>(std::ceil(config_.dt / dt_cfl)));
+    n_sub = std::min(n_sub, 10000);  // Cap to prevent runaway
     double dt_sub = config_.dt / n_sub;
     
+    // RK4 integration
     for (int s = 0; s < n_sub; ++s) {
-        compute_rhs(current_time_ + s * dt_sub, y.data(), ydot.data());
+        double t = current_time_ + s * dt_sub;
+        
+        // k1 = f(t, y)
+        compute_rhs(t, y.data(), k1.data());
+        
+        // k2 = f(t + dt/2, y + dt/2 * k1)
         for (int i = 0; i < total_state_size_; ++i) {
-            y[i] += dt_sub * ydot[i];
-            // Enforce minimum area
-            if (i % 2 == 0) {
-                y[i] = std::max(y[i], config_.min_area);
-            }
+            y_temp[i] = y[i] + 0.5 * dt_sub * k1[i];
+            if (i % 2 == 0) y_temp[i] = std::max(y_temp[i], config_.min_area);
+        }
+        compute_rhs(t + 0.5 * dt_sub, y_temp.data(), k2.data());
+        
+        // k3 = f(t + dt/2, y + dt/2 * k2)
+        for (int i = 0; i < total_state_size_; ++i) {
+            y_temp[i] = y[i] + 0.5 * dt_sub * k2[i];
+            if (i % 2 == 0) y_temp[i] = std::max(y_temp[i], config_.min_area);
+        }
+        compute_rhs(t + 0.5 * dt_sub, y_temp.data(), k3.data());
+        
+        // k4 = f(t + dt, y + dt * k3)
+        for (int i = 0; i < total_state_size_; ++i) {
+            y_temp[i] = y[i] + dt_sub * k3[i];
+            if (i % 2 == 0) y_temp[i] = std::max(y_temp[i], config_.min_area);
+        }
+        compute_rhs(t + dt_sub, y_temp.data(), k4.data());
+        
+        // y_new = y + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+        for (int i = 0; i < total_state_size_; ++i) {
+            y[i] += dt_sub / 6.0 * (k1[i] + 2.0*k2[i] + 2.0*k3[i] + k4[i]);
+            if (i % 2 == 0) y[i] = std::max(y[i], config_.min_area);
         }
     }
     
