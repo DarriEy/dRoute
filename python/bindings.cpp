@@ -1,4 +1,5 @@
 /**
+
  * @file bindings.cpp
  * @brief Python bindings for dMC-Route using pybind11
  * 
@@ -31,13 +32,15 @@
  #include <pybind11/stl.h>
  #include <pybind11/numpy.h>
  #include <pybind11/functional.h>
- 
+ #include <dmc/ad_backend.hpp>
  #include <dmc/router.hpp>
  #include <dmc/advanced_routing.hpp>
  #include <dmc/network.hpp>
  #include <dmc/network_io.hpp>
  #include <dmc/unified_router.hpp>
  #include <dmc/saint_venant_router.hpp>
+ #include <dmc/saint_venant_enzyme.hpp>
+ #include <dmc/parallel_routing.hpp>
  
  namespace py = pybind11;
  using namespace dmc;
@@ -71,6 +74,129 @@
      return io.load_csv(reaches_csv, params_csv);
  }
  
+// =============================================================================
+// ENZYME AD DECLARATIONS AND OBJECTIVE FUNCTION (at file scope)
+// =============================================================================
+
+#ifdef DMC_USE_ENZYME
+
+// Simple objective function for Enzyme to differentiate
+// Computes: sum_t( grad_output[t] * Q_outlet[t] )
+static double routing_objective(
+    int n_reaches,
+    int n_timesteps,
+    int outlet_reach,
+    double dt,
+    const double* manning_n,        // [n_reaches] - DIFFERENTIATE W.R.T. THIS
+    const double* lateral_inflows,  // [n_timesteps * n_reaches] 
+    const double* grad_output,      // [n_timesteps]
+    const double* lengths,          // [n_reaches]
+    const double* slopes,           // [n_reaches]
+    const double* width_coefs,      // [n_reaches]
+    const double* width_exps,       // [n_reaches]
+    const double* depth_coefs,      // [n_reaches]
+    const double* depth_exps,       // [n_reaches]
+    const int* topo_order,          // [n_reaches]
+    const int* upstream_counts,     // [n_reaches]
+    const int* upstream_offsets,    // [n_reaches + 1]
+    const int* upstream_indices     // [total_upstream]
+) {
+    // Allocate state on stack for small networks, heap for large
+    constexpr int STACK_THRESHOLD = 256;
+    double stack_Q[STACK_THRESHOLD];
+    double stack_Q_prev[STACK_THRESHOLD];
+    
+    double* Q = (n_reaches <= STACK_THRESHOLD) ? stack_Q : new double[n_reaches];
+    double* Q_prev = (n_reaches <= STACK_THRESHOLD) ? stack_Q_prev : new double[n_reaches];
+    
+    // Initialize
+    for (int i = 0; i < n_reaches; ++i) {
+        Q[i] = 0.0;
+        Q_prev[i] = 0.0;
+    }
+    
+    double weighted_sum = 0.0;
+    
+    for (int t = 0; t < n_timesteps; ++t) {
+        // Process reaches in topological order
+        for (int idx = 0; idx < n_reaches; ++idx) {
+            int reach = topo_order[idx];
+            
+            // Sum upstream inflows
+            double Q_upstream = 0.0;
+            int n_up = upstream_counts[reach];
+            int offset = upstream_offsets[reach];
+            for (int u = 0; u < n_up; ++u) {
+                int up_reach = upstream_indices[offset + u];
+                Q_upstream += Q[up_reach];
+            }
+            
+            // Add lateral inflow
+            double Q_in = Q_upstream + lateral_inflows[t * n_reaches + reach];
+            
+            // Muskingum-Cunge routing
+            double length = lengths[reach];
+            double slope = std::max(slopes[reach], 1e-6);
+            double n = std::max(manning_n[reach], 0.001);
+            double w_coef = width_coefs[reach];
+            double w_exp = width_exps[reach];
+            double d_coef = depth_coefs[reach];
+            double d_exp = depth_exps[reach];
+            
+            // Reference discharge
+            double Q_ref = std::max(std::max(Q_prev[reach], Q_in), 0.01);
+            
+            // Hydraulic geometry (power law)
+            double width = w_coef * std::pow(Q_ref, w_exp);
+            double depth = d_coef * std::pow(Q_ref, d_exp);
+            width = std::max(width, 0.5);
+            depth = std::max(depth, 0.05);
+            
+            // Hydraulic radius
+            double area = width * depth;
+            double perimeter = width + 2.0 * depth;
+            double R_h = area / perimeter;
+            
+            // Velocity and celerity (Manning's equation)
+            double velocity = (1.0 / n) * std::pow(R_h, 2.0/3.0) * std::sqrt(slope);
+            double celerity = (5.0 / 3.0) * velocity;
+            celerity = std::max(celerity, 0.1);
+            
+            // Muskingum parameters
+            double K = length / celerity;
+            double X = 0.2;
+            
+            // Muskingum coefficients
+            double denom = 2.0 * K * (1.0 - X) + dt;
+            double C0 = (dt - 2.0 * K * X) / denom;
+            double C1 = (dt + 2.0 * K * X) / denom;
+            double C2 = (2.0 * K * (1.0 - X) - dt) / denom;
+            
+            // Route
+            double Q_out = C0 * Q_in + C1 * Q_in + C2 * Q_prev[reach];
+            Q[reach] = std::max(Q_out, 0.0);
+        }
+        
+        // Accumulate weighted objective
+        weighted_sum += grad_output[t] * Q[outlet_reach];
+        
+        // Update previous state
+        for (int i = 0; i < n_reaches; ++i) {
+            Q_prev[i] = Q[i];
+        }
+    }
+    
+    // Cleanup heap allocation if used
+    if (n_reaches > STACK_THRESHOLD) {
+        delete[] Q;
+        delete[] Q_prev;
+    }
+    
+    return weighted_sum;
+}
+
+#endif // DMC_USE_ENZYME
+
  PYBIND11_MODULE(pydmc_route, m) {
      m.doc() = R"pbdoc(
          dMC-Route: Differentiable River Routing Library
@@ -453,7 +579,34 @@
                         For MSE: dL_dQ[t] = 2 * (sim[t] - obs[t]) / n_timesteps
                         Must have same length as recorded outputs.
              )doc",
-             py::arg("reach_id"), py::arg("dL_dQ"));
+             py::arg("reach_id"), py::arg("dL_dQ"))
+         
+         // State serialization for checkpointing
+         .def("save_state", &MuskingumCungeRouter::save_state,
+             "Save current router state for checkpointing")
+         .def("load_state", &MuskingumCungeRouter::load_state,
+             "Load router state from checkpoint",
+             py::arg("state"))
+         .def("save_state_to_file", &MuskingumCungeRouter::save_state_to_file,
+             "Save state to file",
+             py::arg("filepath"))
+         .def("load_state_from_file", &MuskingumCungeRouter::load_state_from_file,
+             "Load state from file",
+             py::arg("filepath"));
+    
+     // RouterState for checkpointing
+     py::class_<RouterState>(m, "RouterState",
+         "Router state for checkpointing and serialization")
+         .def(py::init<>())
+         .def_readwrite("time", &RouterState::time)
+         .def_readwrite("inflows", &RouterState::inflows)
+         .def_readwrite("outflows", &RouterState::outflows)
+         .def("save", &RouterState::save,
+             "Save state to file",
+             py::arg("filepath"))
+         .def_static("load", &RouterState::load,
+             "Load state from file",
+             py::arg("filepath"));
  
      // =========================================================================
      // IRFRouter
@@ -1023,7 +1176,119 @@
          Returns:
              dict with 'simulated', 'losses', 'nse', 'final_loss', 'optimized_manning_n'
      )pbdoc");
- 
+
+    // Python binding for Enzyme AD gradients
+    enzyme.def("compute_manning_gradients", [](
+            py::array_t<double> manning_n,
+            py::array_t<double> lateral_inflows,
+            py::array_t<double> grad_output,
+            py::array_t<double> lengths,
+            py::array_t<double> slopes,
+            py::array_t<double> width_coefs,
+            py::array_t<double> width_exps,
+            py::array_t<double> depth_coefs,
+            py::array_t<double> depth_exps,
+            py::array_t<int> topo_order,
+            py::array_t<int> upstream_counts,
+            py::array_t<int> upstream_offsets,
+            py::array_t<int> upstream_indices,
+            int outlet_reach,
+            double dt
+        ) -> py::array_t<double> {
+        #ifdef DMC_USE_ENZYME
+            // Get buffer info
+            auto mann_buf = manning_n.request();
+            auto inflows_buf = lateral_inflows.request();
+            auto grad_buf = grad_output.request();
+            
+            int n_reaches = mann_buf.shape[0];
+            int n_timesteps = inflows_buf.shape[0];
+            
+            // Get raw pointers
+            double* mann_ptr = static_cast<double*>(mann_buf.ptr);
+            double* inflows_ptr = static_cast<double*>(inflows_buf.ptr);
+            double* grad_ptr = static_cast<double*>(grad_buf.ptr);
+            double* lengths_ptr = static_cast<double*>(lengths.request().ptr);
+            double* slopes_ptr = static_cast<double*>(slopes.request().ptr);
+            double* w_coef_ptr = static_cast<double*>(width_coefs.request().ptr);
+            double* w_exp_ptr = static_cast<double*>(width_exps.request().ptr);
+            double* d_coef_ptr = static_cast<double*>(depth_coefs.request().ptr);
+            double* d_exp_ptr = static_cast<double*>(depth_exps.request().ptr);
+            int* topo_ptr = static_cast<int*>(topo_order.request().ptr);
+            int* counts_ptr = static_cast<int*>(upstream_counts.request().ptr);
+            int* offsets_ptr = static_cast<int*>(upstream_offsets.request().ptr);
+            int* indices_ptr = static_cast<int*>(upstream_indices.request().ptr);
+            
+            // Allocate output gradient
+            std::vector<double> d_manning(n_reaches, 0.0);
+            
+            // Call Enzyme reverse-mode AD
+            __enzyme_autodiff(
+                (void*)routing_objective,
+                enzyme_const, n_reaches,
+                enzyme_const, n_timesteps,
+                enzyme_const, outlet_reach,
+                enzyme_const, dt,
+                enzyme_dup, mann_ptr, d_manning.data(),  // Active variable
+                enzyme_const, inflows_ptr,
+                enzyme_const, grad_ptr,
+                enzyme_const, lengths_ptr,
+                enzyme_const, slopes_ptr,
+                enzyme_const, w_coef_ptr,
+                enzyme_const, w_exp_ptr,
+                enzyme_const, d_coef_ptr,
+                enzyme_const, d_exp_ptr,
+                enzyme_const, topo_ptr,
+                enzyme_const, counts_ptr,
+                enzyme_const, offsets_ptr,
+                enzyme_const, indices_ptr
+            );
+            
+            // Return as numpy array
+            return py::array_t<double>(n_reaches, d_manning.data());
+        #else
+            throw std::runtime_error("Enzyme AD not available. Rebuild with -DDMC_USE_ENZYME=ON");
+        #endif
+        },
+        py::arg("manning_n"),
+        py::arg("lateral_inflows"), 
+        py::arg("grad_output"),
+        py::arg("lengths"),
+        py::arg("slopes"),
+        py::arg("width_coefs"),
+        py::arg("width_exps"),
+        py::arg("depth_coefs"),
+        py::arg("depth_exps"),
+        py::arg("topo_order"),
+        py::arg("upstream_counts"),
+        py::arg("upstream_offsets"),
+        py::arg("upstream_indices"),
+        py::arg("outlet_reach"),
+        py::arg("dt"),
+        R"doc(
+        Compute gradients of routing loss w.r.t. Manning's n using Enzyme AD.
+
+        TRUE reverse-mode automatic differentiation - not numerical!
+
+        Args:
+            manning_n: [n_reaches] Current Manning's n values
+            lateral_inflows: [n_timesteps, n_reaches] Lateral inflows
+            grad_output: [n_timesteps] Upstream gradient dL/dQ_outlet  
+            lengths: [n_reaches] Reach lengths in meters
+            slopes: [n_reaches] Bed slopes
+            width_coefs, width_exps: Power law width parameters
+            depth_coefs, depth_exps: Power law depth parameters
+            topo_order: [n_reaches] Topological order of reaches
+            upstream_counts: [n_reaches] Number of upstream reaches
+            upstream_offsets: [n_reaches+1] Offsets into upstream_indices
+            upstream_indices: Flattened upstream reach indices
+            outlet_reach: Index of outlet reach
+            dt: Timestep in seconds
+
+        Returns:
+            [n_reaches] Gradients dL/d(manning_n)
+        )doc");
+        
      // =========================================================================
      // SaintVenantRouter - Full dynamic SVE solver
      // =========================================================================
@@ -1103,8 +1368,151 @@
              "Access configuration");
  
      // =========================================================================
+     // SaintVenantEnzyme - Enzyme AD + CVODES Adjoint
+     // =========================================================================
+     py::class_<SaintVenantEnzymeConfig, SaintVenantConfig>(m, "SaintVenantEnzymeConfig",
+         "Extended configuration for Enzyme-enabled Saint-Venant solver")
+         .def(py::init<>())
+         .def_readwrite("adjoint_checkpoint_steps", &SaintVenantEnzymeConfig::adjoint_checkpoint_steps,
+             "Steps between checkpoints for adjoint")
+         .def_readwrite("use_hermite_interpolation", &SaintVenantEnzymeConfig::use_hermite_interpolation,
+             "Use Hermite vs polynomial interpolation")
+         .def_readwrite("use_enzyme_jacobian", &SaintVenantEnzymeConfig::use_enzyme_jacobian,
+             "Use Enzyme AD for Jacobian computation")
+         .def_readwrite("use_enzyme_adjoint", &SaintVenantEnzymeConfig::use_enzyme_adjoint,
+             "Use Enzyme AD for adjoint RHS computation");
+ 
+     py::class_<SaintVenantEnzyme>(m, "SaintVenantEnzyme",
+         R"doc(
+         Full dynamic Saint-Venant solver with Enzyme AD gradients.
+         
+         This implementation combines:
+         - SUNDIALS CVODES for implicit time integration (forward pass)
+         - CVODES Adjoint Sensitivity for backward pass  
+         - Enzyme AD for exact Jacobian and adjoint RHS computation
+         
+         The gradient computation strategy:
+         1. Forward pass: CVODES with Enzyme-computed Jacobian (faster Newton)
+         2. Backward pass: CVODES adjoint with Enzyme-computed J^T λ products
+         3. Parameter sensitivity: ∫ λ^T (∂f/∂p) dt via Enzyme
+         
+         This provides exact gradients with O(n_params) cost, significantly 
+         faster than finite difference which has O(n_params * n_timesteps) cost.
+         
+         Example:
+             config = dmc.SaintVenantEnzymeConfig()
+             config.dt = 3600.0  # 1 hour
+             config.use_enzyme_jacobian = True
+             config.use_enzyme_adjoint = True
+             
+             router = dmc.SaintVenantEnzyme(network, config)
+             router.start_recording()
+             
+             for t in range(n_timesteps):
+                 router.set_lateral_inflow(reach_id, inflow[t])
+                 router.route_timestep()
+             
+             router.stop_recording()
+             router.compute_gradients(outlet_reach_id, dL_dQ)
+             grads = router.get_gradients()
+         )doc")
+         
+         .def(py::init<Network&, SaintVenantEnzymeConfig>(),
+             py::arg("network"), py::arg("config") = SaintVenantEnzymeConfig(),
+             "Create Enzyme-enabled Saint-Venant router")
+         
+         // Core routing
+         .def("route_timestep", &SaintVenantEnzyme::route_timestep,
+             "Route one timestep using CVODES implicit solver")
+         .def("route", &SaintVenantEnzyme::route,
+             "Route multiple timesteps",
+             py::arg("num_timesteps"))
+         
+         // State management  
+         .def("set_lateral_inflow", &SaintVenantEnzyme::set_lateral_inflow,
+             "Set lateral inflow for a reach [m³/s]",
+             py::arg("reach_id"), py::arg("inflow"))
+         .def("get_discharge", &SaintVenantEnzyme::get_discharge,
+             "Get discharge at reach outlet [m³/s]",
+             py::arg("reach_id"))
+         .def("get_all_discharges", &SaintVenantEnzyme::get_all_discharges,
+             "Get discharges for all reaches in topological order")
+         .def("get_depth", &SaintVenantEnzyme::get_depth,
+             "Get water depth at reach outlet [m]",
+             py::arg("reach_id"))
+         .def("reset_state", &SaintVenantEnzyme::reset_state,
+             "Reset to initial conditions")
+         
+         // Gradient computation (Enzyme + CVODES Adjoint)
+         .def("start_recording", &SaintVenantEnzyme::start_recording,
+             "Enable gradient recording (activates CVODES checkpointing)")
+         .def("stop_recording", &SaintVenantEnzyme::stop_recording,
+             "Stop recording")
+         .def("compute_gradients", &SaintVenantEnzyme::compute_gradients,
+             R"doc(
+             Compute gradients via CVODES adjoint with Enzyme AD.
+             
+             Uses the adjoint method:
+             1. Backward integration: λ' = -J^T λ (Enzyme provides J^T λ)
+             2. Accumulate: dL/dp = ∫ λ^T (∂f/∂p) dt (Enzyme provides ∂f/∂p)
+             
+             Args:
+                 gauge_reach_id: Reach where loss is computed
+                 dL_dQ: Gradient of loss w.r.t. Q at each recorded time
+             )doc",
+             py::arg("gauge_reach_id"), py::arg("dL_dQ"))
+         .def("get_gradients", &SaintVenantEnzyme::get_gradients,
+             "Get accumulated gradients as dict")
+         .def("reset_gradients", &SaintVenantEnzyme::reset_gradients,
+             "Reset gradient accumulators")
+         
+         // Properties
+         .def("current_time", &SaintVenantEnzyme::current_time,
+             "Current simulation time [s]")
+         .def_property_readonly("config", &SaintVenantEnzyme::config,
+             "Access configuration");
+ 
+     // =========================================================================
+     // ParallelEnzymeRouter - OpenMP parallelized routing
+     // =========================================================================
+     py::class_<ParallelEnzymeRouter>(m, "ParallelEnzymeRouter",
+         R"doc(
+         OpenMP-parallelized Muskingum-Cunge router.
+         
+         Uses graph coloring to identify independent reaches that can be
+         processed in parallel. Provides significant speedup for large basins.
+         
+         Example:
+             router = dmc.ParallelEnzymeRouter(network, num_threads=4)
+             for t in range(n_timesteps):
+                 router.set_lateral_inflow(reach_id, inflow)
+                 router.route_timestep()
+         )doc")
+         .def(py::init<Network&, int, double, int>(),
+             py::arg("network"),
+             py::arg("num_threads") = 0,
+             py::arg("dt") = 3600.0,
+             py::arg("num_substeps") = 4,
+             "Create parallel router (num_threads=0 uses all available)")
+         
+         .def("route_timestep", &ParallelEnzymeRouter::route_timestep,
+             "Route one timestep using parallel processing")
+         .def("set_lateral_inflow", &ParallelEnzymeRouter::set_lateral_inflow,
+             "Set lateral inflow for a reach",
+             py::arg("reach_id"), py::arg("inflow"))
+         .def("get_discharge", &ParallelEnzymeRouter::get_discharge,
+             "Get discharge at reach outlet",
+             py::arg("reach_id"))
+         .def("reset_state", &ParallelEnzymeRouter::reset_state,
+             "Reset to initial conditions")
+         .def("num_colors", &ParallelEnzymeRouter::num_colors,
+             "Number of color groups (parallel batches)")
+         .def("num_threads", &ParallelEnzymeRouter::num_threads,
+             "Number of OpenMP threads");
+ 
+     // =========================================================================
      // Version info
      // =========================================================================
-     m.attr("__version__") = "0.5.0";
+     m.attr("__version__") = "0.6.0";
      m.attr("__author__") = "dMC-Route Authors";
  }

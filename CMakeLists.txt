@@ -301,6 +301,11 @@ if(DMC_BUILD_PYTHON)
     message(STATUS "Python module will be built as: pydmc_route")
 endif()
 
+if(DMC_ENABLE_ENZYME AND DMC_ENZYME_AVAILABLE)
+    target_compile_definitions(pydmc_route PRIVATE DMC_USE_ENZYME)
+    target_compile_options(pydmc_route PRIVATE ${ENZYME_COMPILE_FLAGS})
+endif()
+
 # ============ Executable for Testing ============
 add_executable(dmc_route_run src/main.cpp)
 target_link_libraries(dmc_route_run PRIVATE dmc_route)

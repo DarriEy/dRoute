@@ -282,8 +282,14 @@ inline void BmiMuskingumCunge::GetValue(std::string name, void* dest) {
 }
 
 inline void* BmiMuskingumCunge::GetValuePtr(std::string name) {
-    // Copy to buffer and return pointer
-    // Note: This is not ideal for performance but matches BMI spec
+    // WARNING: This implementation copies to a buffer, NOT true zero-copy!
+    // The BMI spec requires returning a pointer to the actual model state,
+    // but MuskingumCungeRouter uses struct-of-arrays storage (Reach objects).
+    // For true zero-copy, use EnzymeRouter or ParallelEnzymeRouter which
+    // store Q_out_ in a contiguous array accessible via get_discharge_ptr().
+    //
+    // Modifying data through this pointer will NOT update the model state.
+    // This is suitable for read-only coupling but breaks data assimilation.
     GetValue(name, discharge_buffer_.data());
     return discharge_buffer_.data();
 }

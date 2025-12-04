@@ -372,6 +372,26 @@ public:
      */
     void reset_state();
     
+    /**
+     * Save current router state for checkpointing.
+     */
+    RouterState save_state() const;
+    
+    /**
+     * Load router state from checkpoint.
+     */
+    void load_state(const RouterState& state);
+    
+    /**
+     * Save state to file.
+     */
+    bool save_state_to_file(const std::string& filepath) const;
+    
+    /**
+     * Load state from file.
+     */
+    bool load_state_from_file(const std::string& filepath);
+    
     // =========== Time Management ===========
     
     double current_time() const { return current_time_; }
@@ -825,6 +845,53 @@ inline void MuskingumCungeRouter::reset_state() {
     }
     current_time_ = 0.0;
     reset_gradients();
+}
+
+inline RouterState MuskingumCungeRouter::save_state() const {
+    RouterState state;
+    state.time = current_time_;
+    
+    for (int reach_id : network_.topological_order()) {
+        const Reach& reach = network_.get_reach(reach_id);
+        state.inflows[reach_id] = to_double(reach.inflow_curr);
+        state.outflows[reach_id] = to_double(reach.outflow_curr);
+    }
+    
+    return state;
+}
+
+inline void MuskingumCungeRouter::load_state(const RouterState& state) {
+    current_time_ = state.time;
+    
+    for (int reach_id : network_.topological_order()) {
+        Reach& reach = network_.get_reach(reach_id);
+        
+        auto it_in = state.inflows.find(reach_id);
+        if (it_in != state.inflows.end()) {
+            reach.inflow_curr = Real(it_in->second);
+            reach.inflow_prev = reach.inflow_curr;
+        }
+        
+        auto it_out = state.outflows.find(reach_id);
+        if (it_out != state.outflows.end()) {
+            reach.outflow_curr = Real(it_out->second);
+            reach.outflow_prev = reach.outflow_curr;
+        }
+    }
+}
+
+inline bool MuskingumCungeRouter::save_state_to_file(const std::string& filepath) const {
+    return save_state().save(filepath);
+}
+
+inline bool MuskingumCungeRouter::load_state_from_file(const std::string& filepath) {
+    try {
+        RouterState state = RouterState::load(filepath);
+        load_state(state);
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 // ============================================================================
