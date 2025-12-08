@@ -1,7 +1,5 @@
 # dRoute: Differentiable River Routing Library
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
 A differentiable river routing library for hydrological modeling. dRoute implements multiple routing methods with automatic differentiation support, enabling gradient-based parameter optimization for seamless integration with machine learning workflows.
 
 ## Features
