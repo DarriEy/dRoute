@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance differentiable river routing library for hydrological modeling. dRoute implements multiple routing methods with automatic differentiation support, enabling gradient-based parameter optimization for seamless integration with machine learning workflows.
+A differentiable river routing library for hydrological modeling. dRoute implements multiple routing methods with automatic differentiation support, enabling gradient-based parameter optimization for seamless integration with machine learning workflows.
 
 ## Features
 
@@ -23,13 +23,6 @@ A high-performance differentiable river routing library for hydrological modelin
 | **KWT-Soft** | `SoftGatedKWT` | Kinematic wave tracking | ~4,000/s | Differentiable Lagrangian |
 | **Diffusive Wave** | `DiffusiveWaveIFT` | Diffusion wave PDE | ~3,000/s | Flood wave attenuation |
 | **Saint-Venant** | `SaintVenantRouter` | Full shallow water eqs | ~100/s | High-fidelity benchmark |
-
-### Method Selection Guide
-
-- **For production**: Muskingum-Cunge (fast, well-tested, good gradients)
-- **For calibration**: Use `--fast` flag with Enzyme kernels
-- **For benchmarking**: Saint-Venant provides ground truth physics
-- **For ML integration**: Any method works with PyTorch
 
 ## Quick Start
 
@@ -270,31 +263,6 @@ cmake .. \
 
 make -j8
 ```
-
-## Performance Benchmarks
-
-Bow at Banff basin (49 reaches, 2,210 km², 8,760 hourly timesteps):
-
-### Forward Pass
-
-| Method | Time | Throughput | NSE | KGE | PBIAS |
-|--------|------|------------|-----|-----|-------|
-| Lag | 0.4s | 20,000/s | 0.169 | 0.176 | -42.6% |
-| MC | 2.0s | 4,500/s | 0.173 | 0.177 | -42.6% |
-| KWT | 2.2s | 4,000/s | 0.176 | 0.173 | -43.9% |
-| Diffusive | 2.9s | 3,000/s | 0.177 | 0.180 | -42.6% |
-| IRF | 8.2s | 1,000/s | 0.171 | 0.176 | -42.6% |
-| **SVE** | 89s | 100/s | **0.348** | **0.483** | **-7.5%** |
-
-*SVE's superior performance demonstrates the value of full momentum physics.*
-
-### Optimization (30 epochs)
-
-| Backend | Method | Time | Final NSE |
-|---------|--------|------|-----------|
-| Enzyme | MC | 31s | 0.184 |
-| Enzyme | KWT | 11s | 0.189 |
-| CoDiPack | MC | 150s | 0.184 |
 
 ## Data Format
 
