@@ -39,7 +39,7 @@ make -j4
 ```bash
 cd ..
 export PYTHONPATH=$PYTHONPATH:$(pwd)/build/python
-python -c "import pydmc_route as dmc; print(f'dRoute v{dmc.__version__} loaded')"
+python -c "import droute; print(f'dRoute v{droute.__version__} loaded')"
 ```
 
 ### Run with Sample Data
@@ -55,22 +55,30 @@ PYTHONPATH=build/python python python/test_routing_with_data.py --data-dir data 
 PYTHONPATH=build/python python python/test_routing_with_data.py --data-dir data --sve
 ```
 
+### Download Sample Data
+
+The example dataset is hosted as a GitHub release asset (v0.5.0).
+
+```bash
+python scripts/download_data.py
+```
+
 ## Usage
 
 ### Basic Python API
 
 ```python
-import pydmc_route as dmc
+import droute
 import numpy as np
 
 # Load network from mizuRoute topology file
-network = dmc.Network()
-dmc.load_topology(network, "data/settings/dRoute/topology.nc")
+network = droute.Network()
+droute.load_topology(network, "data/settings/dRoute/topology.nc")
 
 # Or build programmatically
-network = dmc.Network()
+network = droute.Network()
 for i in range(10):
-    reach = dmc.Reach()
+    reach = droute.Reach()
     reach.id = i
     reach.length = 5000.0  # meters
     reach.slope = 0.001
@@ -80,10 +88,10 @@ for i in range(10):
 network.build_topology()
 
 # Create router
-config = dmc.RouterConfig()
+config = droute.RouterConfig()
 config.dt = 3600.0  # 1-hour timestep
 
-router = dmc.MuskingumCungeRouter(network, config)
+router = droute.MuskingumCungeRouter(network, config)
 
 # Run simulation
 runoff = np.random.rand(100, 10) * 0.001  # (timesteps, reaches)
@@ -101,7 +109,7 @@ for t in range(100):
 ```python
 # Enable gradient recording
 config.enable_gradients = True
-router = dmc.MuskingumCungeRouter(network, config)
+router = droute.MuskingumCungeRouter(network, config)
 
 router.start_recording()
 
@@ -129,12 +137,12 @@ print(f"dLoss/d(manning_n) for reach 0: {grads['reach_0_manning_n']}")
 
 ```python
 # Create Enzyme router (no tape overhead, ~5x faster)
-router = dmc.enzyme.EnzymeRouter(network, dt=3600.0, num_substeps=4, method=0)
+router = droute.enzyme.EnzymeRouter(network, dt=3600.0, num_substeps=4, method=0)
 
 # Methods: 0=MC, 1=Lag, 2=IRF, 3=KWT, 4=Diffusive
 
 # Optimize Manning's n using built-in gradient descent
-result = dmc.enzyme.optimize(
+result = droute.enzyme.optimize(
     router,
     runoff,           # (n_timesteps, n_reaches)
     observed,         # (n_timesteps,)
@@ -152,7 +160,7 @@ print(f"Optimized Manning's n: {result['optimized_manning_n']}")
 
 ```python
 # Configure SVE solver
-config = dmc.SaintVenantConfig()
+config = droute.SaintVenantConfig()
 config.dt = 3600.0
 config.n_nodes = 10          # Spatial nodes per reach
 config.initial_depth = 0.5   # Initial water depth [m]
@@ -160,7 +168,7 @@ config.rel_tol = 1e-4        # CVODES tolerances
 config.abs_tol = 1e-6
 
 # Create router (uses SUNDIALS CVODES if available)
-router = dmc.SaintVenantRouter(network, config)
+router = droute.SaintVenantRouter(network, config)
 
 # Run simulation - SVE also provides water depth!
 for t in range(n_timesteps):
@@ -345,9 +353,9 @@ PYTHONPATH=build/python python python/test_routing_with_data.py \
 ## Citation
 
 ```bibtex
-@software{dRoute2024,
+@software{dRoute2025,
   title={dRoute: Differentiable River Routing Library},
-  author={Thorsson, Darri},
+  author={Eythorsson, Darri},
   year={2024},
   url={https://github.com/DarriEy/dRoute}
 }

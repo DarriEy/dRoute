@@ -7,16 +7,16 @@
  * with PyTorch and other ML frameworks. Eliminates subprocess/CSV overhead.
  * 
  * Usage:
- *   import pydmc_route as dmc
+ *   import droute
  *   
- *   net = dmc.Network()
+ *   net = droute.Network()
  *   net.load_from_geojson("network.geojson")
  *   
- *   config = dmc.RouterConfig()
+ *   config = droute.RouterConfig()
  *   config.dt = 3600.0
  *   config.enable_gradients = True
  *   
- *   router = dmc.MuskingumCungeRouter(net, config)
+ *   router = droute.MuskingumCungeRouter(net, config)
  *   router.start_recording()
  *   
  *   for t in range(num_timesteps):
@@ -212,10 +212,10 @@ static double routing_objective(
          - NumPy array support for efficient data transfer
          
          Example:
-             >>> import pydmc_route as dmc
-             >>> net = dmc.Network()
-             >>> config = dmc.RouterConfig()
-             >>> router = dmc.MuskingumCungeRouter(net, config)
+            >>> import droute
+             >>> net = droute.Network()
+             >>> config = droute.RouterConfig()
+             >>> router = droute.MuskingumCungeRouter(net, config)
      )pbdoc";
  
      // =========================================================================
@@ -786,7 +786,7 @@ static double routing_objective(
          - 4: Diffusive Wave
          
          Example:
-             >>> router = dmc.enzyme.EnzymeRouter(network, method=0)
+             >>> router = droute.enzyme.EnzymeRouter(network, method=0)
              >>> router.set_lateral_inflows(runoff)
              >>> router.route_timestep()
              >>> Q = router.get_discharges()
@@ -1400,12 +1400,12 @@ static double routing_objective(
          faster than finite difference which has O(n_params * n_timesteps) cost.
          
          Example:
-             config = dmc.SaintVenantEnzymeConfig()
+             config = droute.SaintVenantEnzymeConfig()
              config.dt = 3600.0  # 1 hour
              config.use_enzyme_jacobian = True
              config.use_enzyme_adjoint = True
              
-             router = dmc.SaintVenantEnzyme(network, config)
+             router = droute.SaintVenantEnzyme(network, config)
              router.start_recording()
              
              for t in range(n_timesteps):
@@ -1483,7 +1483,7 @@ static double routing_objective(
          processed in parallel. Provides significant speedup for large basins.
          
          Example:
-             router = dmc.ParallelEnzymeRouter(network, num_threads=4)
+             router = droute.ParallelEnzymeRouter(network, num_threads=4)
              for t in range(n_timesteps):
                  router.set_lateral_inflow(reach_id, inflow)
                  router.route_timestep()
@@ -1513,6 +1513,6 @@ static double routing_objective(
      // =========================================================================
      // Version info
      // =========================================================================
-     m.attr("__version__") = "0.6.0";
+    m.attr("__version__") = "0.5.0";
      m.attr("__author__") = "dMC-Route Authors";
  }

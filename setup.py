@@ -95,8 +95,9 @@ setup(
     ext_modules=[CMakeExtension("pydmc_route")],
     cmdclass={"build_ext": CMakeBuild},
     
-    # No Python packages - this is a pure C++ extension
-    packages=[],
+    packages=["droute"],
+    package_dir={"": "python"},
+    include_package_data=True,
     
     python_requires=">=3.8",
     install_requires=[

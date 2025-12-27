@@ -47,12 +47,12 @@ except ImportError:
 
 # Import dRoute bindings
 try:
-    import pydmc_route as dmc
-    HAS_DMC = True
-    print(f"Loaded pydmc_route version {dmc.__version__}")
+    import droute
+    HAS_DROUTE = True
+    print(f"Loaded droute version {droute.__version__}")
 except ImportError:
-    HAS_DMC = False
-    print("Warning: pydmc_route not found. Build with: pip install -e .")
+    HAS_DROUTE = False
+    print("Warning: droute not found. Build with: pip install -e .")
 
 
 # =============================================================================
@@ -94,7 +94,7 @@ def pbias(sim: np.ndarray, obs: np.ndarray) -> float:
     return 100.0 * np.nansum(sim - obs) / obs_sum if obs_sum != 0 else 0.0
 
 
-def load_topology(filepath: Path) -> Tuple['dmc.Network', np.ndarray, int, Dict[int, int]]:
+def load_topology(filepath: Path) -> Tuple['droute.Network', np.ndarray, int, Dict[int, int]]:
     """
     Load river network topology from mizuRoute topology.nc file.
     
@@ -102,15 +102,15 @@ def load_topology(filepath: Path) -> Tuple['dmc.Network', np.ndarray, int, Dict[
         filepath: Path to topology.nc
         
     Returns:
-        network: Configured dmc.Network with proper topology connections
+        network: Configured droute.Network with proper topology connections
         seg_areas: Array of HRU areas in m² (indexed by reach index)
         outlet_idx: Index of outlet reach
         hru_to_seg_idx: Mapping from HRU ID to segment index
     """
     if not HAS_XARRAY:
         raise ImportError("xarray required to load NetCDF files")
-    if not HAS_DMC:
-        raise ImportError("pydmc_route required")
+    if not HAS_DROUTE:
+        raise ImportError("droute required")
     
     ds = xr.open_dataset(filepath)
     
@@ -155,12 +155,12 @@ def load_topology(filepath: Path) -> Tuple['dmc.Network', np.ndarray, int, Dict[
             upstream_map[down_idx].append(i)
     
     # Build network
-    network = dmc.Network()
+    network = droute.Network()
     
     # Create all reaches with proper junction IDs
     # Convention: each reach has a junction at its upstream end with same ID
     for i in range(n_segs):
-        reach = dmc.Reach()
+        reach = droute.Reach()
         reach.id = i
         reach.length = float(lengths[i])
         reach.slope = max(float(slopes[i]), 0.0001)
@@ -186,7 +186,7 @@ def load_topology(filepath: Path) -> Tuple['dmc.Network', np.ndarray, int, Dict[
     
     # Create junctions - one at upstream end of each reach
     for i in range(n_segs):
-        junc = dmc.Junction()
+        junc = droute.Junction()
         junc.id = i
         
         # Upstream reaches that flow into this junction
@@ -427,7 +427,7 @@ def load_observations(filepath: Path) -> Tuple[pd.DatetimeIndex, np.ndarray]:
 
 def create_synthetic_network(n_reaches: int = 10, 
                              reach_length: float = 5000.0,
-                             slope: float = 0.001) -> 'dmc.Network':
+                             slope: float = 0.001) -> 'droute.Network':
     """
     Create a simple linear synthetic network for testing.
     
@@ -439,14 +439,14 @@ def create_synthetic_network(n_reaches: int = 10,
     Returns:
         Network object
     """
-    if not HAS_DMC:
-        raise ImportError("pydmc_route required")
+    if not HAS_DROUTE:
+        raise ImportError("droute required")
     
-    network = dmc.Network()
+    network = droute.Network()
     
     # Create linear chain of reaches
     for i in range(n_reaches):
-        reach = dmc.Reach()
+        reach = droute.Reach()
         reach.id = i
         reach.name = f"reach_{i}"
         reach.length = reach_length
@@ -482,7 +482,7 @@ ROUTER_CLASSES = {
 class RoutingTest:
     """Test harness for routing methods."""
     
-    def __init__(self, network: 'dmc.Network', 
+    def __init__(self, network: 'droute.Network', 
                  runoff: np.ndarray,
                  dt: float = 3600.0,
                  outlet_reach: int = None):
@@ -511,19 +511,19 @@ class RoutingTest:
         Returns:
             Array of outlet discharge (n_timesteps,)
         """
-        if not HAS_DMC:
-            raise ImportError("pydmc_route required")
+        if not HAS_DROUTE:
+            raise ImportError("droute required")
         
         # Create router config based on method
         if method == 'sve':
             # Saint-Venant uses its own config class
-            config = dmc.SaintVenantConfig()
+            config = droute.SaintVenantConfig()
             config.dt = self.dt
             config.n_nodes = kwargs.get('n_nodes', 10)
             config.initial_depth = kwargs.get('initial_depth', 0.5)
             config.initial_velocity = kwargs.get('initial_velocity', 0.1)
         else:
-            config = dmc.RouterConfig()
+            config = droute.RouterConfig()
             config.dt = self.dt
             config.enable_gradients = kwargs.get('enable_gradients', False)
             
@@ -541,7 +541,7 @@ class RoutingTest:
         if not router_class_name:
             raise ValueError(f"Unknown method: {method}")
         
-        RouterClass = getattr(dmc, router_class_name)
+        RouterClass = getattr(droute, router_class_name)
         router = RouterClass(self.network, config)
         
         # Run simulation
@@ -583,7 +583,7 @@ class RoutingTest:
 # PyTorch Optimization (using CoDiPack AD through dRoute)
 # =============================================================================
 
-def optimize_routing_pytorch(network: 'dmc.Network',
+def optimize_routing_pytorch(network: 'droute.Network',
                              runoff: np.ndarray,
                              observed: np.ndarray,
                              method: str = 'mc',
@@ -614,8 +614,8 @@ def optimize_routing_pytorch(network: 'dmc.Network',
     """
     if not HAS_TORCH:
         raise ImportError("PyTorch required for optimization")
-    if not HAS_DMC:
-        raise ImportError("pydmc_route required")
+    if not HAS_DROUTE:
+        raise ImportError("droute required")
     
     n_timesteps = runoff.shape[0]
     n_reaches = runoff.shape[1]
@@ -630,12 +630,12 @@ def optimize_routing_pytorch(network: 'dmc.Network',
                 break
     
     # Create config with gradients enabled
-    config = dmc.RouterConfig()
+    config = droute.RouterConfig()
     config.dt = dt
     config.enable_gradients = True
     
     # Get router class
-    RouterClass = getattr(dmc, ROUTER_CLASSES[method])
+    RouterClass = getattr(droute, ROUTER_CLASSES[method])
     
     # Check if router supports timeseries gradients
     has_timeseries_grad = hasattr(RouterClass, '__init__') and method == 'mc'
@@ -765,7 +765,7 @@ def optimize_routing_pytorch(network: 'dmc.Network',
     for i in range(n_reaches):
         network.get_reach(i).manning_n = float(final_manning[i])
     
-    config_final = dmc.RouterConfig()
+    config_final = droute.RouterConfig()
     config_final.dt = dt
     config_final.enable_gradients = False
     router = RouterClass(network, config_final)
@@ -794,7 +794,7 @@ def optimize_routing_pytorch(network: 'dmc.Network',
     return results
 
 
-def optimize_routing_fast(network: 'dmc.Network',
+def optimize_routing_fast(network: 'droute.Network',
                           runoff: np.ndarray,
                           observed: np.ndarray,
                           method: str = 'mc',
@@ -819,19 +819,19 @@ def optimize_routing_fast(network: 'dmc.Network',
     Returns:
         Dictionary with optimized parameters and final metrics
     """
-    if not HAS_DMC:
-        raise ImportError("pydmc_route required")
+    if not HAS_DROUTE:
+        raise ImportError("droute required")
     
     n_timesteps = runoff.shape[0]
     n_reaches = runoff.shape[1]
     outlet_reach = n_reaches - 1
     
     # Create config (no gradients needed - we'll use finite diff)
-    config = dmc.RouterConfig()
+    config = droute.RouterConfig()
     config.dt = dt
     config.enable_gradients = False  # Faster without AD
     
-    RouterClass = getattr(dmc, ROUTER_CLASSES[method])
+    RouterClass = getattr(droute, ROUTER_CLASSES[method])
     
     # Initialize parameters
     manning_n = np.array([network.get_reach(i).manning_n for i in range(n_reaches)])
@@ -1098,8 +1098,8 @@ def run_tests(data_dir: Optional[Path] = None,
         print(f"  Generated {n_timesteps} timesteps, {n_reaches} reaches")
     
     # Create network if not loaded from topology
-    if not HAS_DMC:
-        print("Cannot run tests without pydmc_route")
+    if not HAS_DROUTE:
+        print("Cannot run tests without droute")
         return results
     
     if network is None:
@@ -1193,14 +1193,14 @@ def run_tests(data_dir: Optional[Path] = None,
                     method_idx = method_map.get(method.lower(), 0)
                     
                     # Use the C++ enzyme optimize function directly with correct method
-                    router = dmc.enzyme.EnzymeRouter(
+                    router = droute.enzyme.EnzymeRouter(
                         opt_network, 
                         dt=3600.0, 
                         num_substeps=4,
                         method=method_idx
                     )
                     
-                    opt_result = dmc.enzyme.optimize(
+                    opt_result = droute.enzyme.optimize(
                         router,
                         runoff_subset.astype(np.float64),
                         obs_subset.astype(np.float64),

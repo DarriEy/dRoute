@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 project(dmc_route 
-    VERSION 0.1.0 
+    VERSION 0.5.0 
     DESCRIPTION "Differentiable Muskingum-Cunge Routing"
     LANGUAGES CXX
 )
@@ -282,9 +282,14 @@ if(DMC_BUILD_PYTHON)
     target_link_libraries(pydmc_route PRIVATE dmc_route)
     
     # Set output name and properties
+    if(DEFINED CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+        set(_pydmc_route_output_dir "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+    else()
+        set(_pydmc_route_output_dir "${CMAKE_BINARY_DIR}/python")
+    endif()
     set_target_properties(pydmc_route PROPERTIES
         OUTPUT_NAME pydmc_route
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python"
+        LIBRARY_OUTPUT_DIRECTORY "${_pydmc_route_output_dir}"
     )
     
     # Install Python module

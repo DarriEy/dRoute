@@ -46,6 +46,10 @@ Repository = "https://github.com/your-org/dmc-route"
 # Don't look for Python packages - this is a pure C++ extension built by setup.py
 [tool.setuptools]
 py-modules = []
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
 
 [tool.black]
 line-length = 88

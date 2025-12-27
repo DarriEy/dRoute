@@ -45,6 +45,7 @@ env/
 *.pdf
 routing_comparison_*.png
 optimization_*.png
+data/
 
 # Temporary files
 *.tmp

@@ -926,9 +926,9 @@ inline void SaintVenantEnzyme::start_recording() {
     recording_ = true;
     recorded_times_.clear();
     recorded_states_.clear();
-    ncheck_ = 0;
     
 #ifdef DMC_ENABLE_SUNDIALS
+    ncheck_ = 0;
     setup_adjoint();
 #endif
 }
