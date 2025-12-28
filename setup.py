@@ -26,16 +26,16 @@ class CMakeExtension(Extension):
 
 class CMakeBuild(build_ext):
     """Build extension using cmake."""
-    
+
     def build_extension(self, ext):
         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.name)))
-        
+
         # Required for auto-detection of auxiliary "native" libs
         if not extdir.endswith(os.path.sep):
             extdir += os.path.sep
 
         cfg = "Debug" if self.debug else "Release"
-        
+
         cmake_args = [
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
@@ -43,24 +43,29 @@ class CMakeBuild(build_ext):
             "-DDMC_BUILD_PYTHON=ON",
             "-DDMC_BUILD_TESTS=OFF",
         ]
-        
+
+        # Add any extra CMAKE_ARGS from environment
+        if "CMAKE_ARGS" in os.environ:
+            import shlex
+            cmake_args += shlex.split(os.environ["CMAKE_ARGS"])
+
         build_args = ["--config", cfg]
-        
+
         # Set CMAKE_BUILD_PARALLEL_LEVEL to control the parallel build level
         if "CMAKE_BUILD_PARALLEL_LEVEL" not in os.environ:
             # Default to a sensible number of parallel jobs
             jobs = os.cpu_count() or 4
             build_args += ["--", f"-j{jobs}"]
-        
+
         build_temp = Path(self.build_temp)
         build_temp.mkdir(parents=True, exist_ok=True)
-        
+
         subprocess.run(
             ["cmake", ext.sourcedir] + cmake_args,
             cwd=build_temp,
             check=True
         )
-        
+
         subprocess.run(
             ["cmake", "--build", "."] + build_args,
             cwd=build_temp,

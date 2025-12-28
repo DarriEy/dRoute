@@ -2,6 +2,8 @@
 
 A differentiable river routing library for hydrological modeling. dRoute implements multiple routing methods with automatic differentiation support, enabling gradient-based parameter optimization and integration with machine learning workflows.
 
+***Note dRoute is in active development expect unfinished code***
+
 ## Features
 
 - **6 Routing Methods**: From simple lag routing to Saint-Venant equations
