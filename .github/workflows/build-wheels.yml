@@ -58,8 +58,8 @@ jobs:
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake ninja netcdf llvm libomp
-          echo "LLVM_PREFIX=$(brew --prefix llvm)" >> $GITHUB_ENV
+          brew install cmake ninja netcdf llvm@19 libomp
+          echo "LLVM_PREFIX=$(brew --prefix llvm@19)" >> $GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp):$CMAKE_PREFIX_PATH" >> $GITHUB_ENV
 
       - name: Build Enzyme from source (Ubuntu)
@@ -166,9 +166,10 @@ jobs:
         run: |
           EXTRA_CMAKE_ARGS=""
           if [ "${RUNNER_OS}" = "macOS" ]; then
-            EXTRA_CMAKE_ARGS="-DDMC_BUILD_RUN=OFF -DCMAKE_SHARED_LINKER_FLAGS=-lc++ -DCMAKE_MODULE_LINKER_FLAGS=-lc++"
+            EXTRA_CMAKE_ARGS="-DDMC_BUILD_RUN=OFF"
             export MACOSX_DEPLOYMENT_TARGET=11.0
-            export LDFLAGS="-L${LLVM_PREFIX}/lib -Wl,-rpath,${LLVM_PREFIX}/lib"
+            # Disable LTO to avoid flat namespace issues with libc++
+            export CXXFLAGS="-fno-lto"
           fi
           CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_VERBOSE_MAKEFILE=ON -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN} -DDMC_ENABLE_SUNDIALS=ON -DSUNDIALS_ROOT=${SUNDIALS_ROOT} -DDMC_ENABLE_OPENMP=ON ${EXTRA_CMAKE_ARGS}" \
             pip -v install . --no-build-isolation
