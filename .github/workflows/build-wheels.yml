@@ -84,6 +84,7 @@ jobs:
             echo "Enzyme plugin not found in build output" >&2
             exit 1
           fi
+          ENZYME_PLUGIN="$PWD/$ENZYME_PLUGIN"
           echo "ENZYME_PLUGIN=$ENZYME_PLUGIN" >> $GITHUB_ENV
           echo "CC=clang-17" >> $GITHUB_ENV
           echo "CXX=clang++-17" >> $GITHUB_ENV
@@ -112,6 +113,7 @@ jobs:
             echo "Enzyme plugin not found in build output" >&2
             exit 1
           fi
+          ENZYME_PLUGIN="$PWD/$ENZYME_PLUGIN"
           echo "ENZYME_PLUGIN=$ENZYME_PLUGIN" >> $GITHUB_ENV
           echo "CC=$LLVM_PREFIX/bin/clang" >> $GITHUB_ENV
           echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
