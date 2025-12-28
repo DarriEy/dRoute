@@ -105,7 +105,6 @@ jobs:
               exit 1
             fi
           fi
-          LLVM_PREFIX="$(brew --prefix llvm)"
           LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
           cmake -S "$ENZYME_SRC" -B Enzyme/build -DLLVM_DIR="$($LLVM_CONFIG --cmakedir)"
           cmake --build Enzyme/build
