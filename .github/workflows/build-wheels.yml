@@ -161,8 +161,8 @@ jobs:
 
       - name: Editable install (pip -e) first
         run: |
-          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN} -DDMC_ENABLE_SUNDIALS=ON -DSUNDIALS_ROOT=${SUNDIALS_ROOT} -DDMC_ENABLE_OPENMP=ON" \
-            pip install -e .
+          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_VERBOSE_MAKEFILE=ON -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN} -DDMC_ENABLE_SUNDIALS=ON -DSUNDIALS_ROOT=${SUNDIALS_ROOT} -DDMC_ENABLE_OPENMP=ON" \
+            pip -v install -e .
           python -c "import droute; print(f'Editable install OK: {droute.__version__}')"
 
       - name: Full CMake build (all flags)
