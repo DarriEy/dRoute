@@ -313,7 +313,7 @@ if(DMC_BUILD_PYTHON)
     message(STATUS "Python module will be built as: _droute_core")
 endif()
 
-if(DMC_ENABLE_ENZYME AND DMC_ENZYME_AVAILABLE)
+if(DMC_ENABLE_ENZYME AND DMC_ENZYME_AVAILABLE AND DMC_BUILD_PYTHON AND TARGET _droute_core)
     target_compile_definitions(_droute_core PRIVATE DMC_USE_ENZYME)
     target_compile_options(_droute_core PRIVATE ${ENZYME_COMPILE_FLAGS})
 endif()
@@ -423,12 +423,14 @@ if(DMC_ENABLE_SUNDIALS)
     
     add_definitions(-DDMC_ENABLE_SUNDIALS)
     
-    target_link_libraries(pydmc_route PRIVATE 
-        SUNDIALS::cvodes 
-        SUNDIALS::nvecserial
-        SUNDIALS::sunlinsoldense
-        SUNDIALS::sunmatrixdense
-    )
+    if(DMC_BUILD_PYTHON AND TARGET _droute_core)
+        target_link_libraries(_droute_core PRIVATE
+            SUNDIALS::cvodes
+            SUNDIALS::nvecserial
+            SUNDIALS::sunlinsoldense
+            SUNDIALS::sunmatrixdense
+        )
+    endif()
     
     message(STATUS "SUNDIALS enabled for Saint-Venant solver")
 endif()

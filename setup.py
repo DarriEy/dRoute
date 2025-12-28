@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 """
-Setup script for dMC-Route Python bindings.
+dRoute build setup for the C++ extension.
 
-Installation:
-    pip install .
-    
-Or for development:
-    pip install -e .
-    
 Requires:
     - CMake 3.15+
     - C++17 compiler
@@ -17,17 +11,9 @@ Requires:
 import os
 import sys
 import subprocess
-from pathlib import Path
 
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
-
-# Read version from single source of truth
-version_file = Path(__file__).parent / "python" / "droute" / "_version.py"
-version_info = {}
-with open(version_file) as f:
-    exec(f.read(), version_info)
-__version__ = version_info["__version__"]
 
 
 class CMakeExtension(Extension):
@@ -61,8 +47,9 @@ class CMakeBuild(build_ext):
         
         # Set CMAKE_BUILD_PARALLEL_LEVEL to control the parallel build level
         if "CMAKE_BUILD_PARALLEL_LEVEL" not in os.environ:
-            # Default to 4 parallel jobs
-            build_args += ["--", "-j4"]
+            # Default to a sensible number of parallel jobs
+            jobs = os.cpu_count() or 4
+            build_args += ["--", f"-j{jobs}"]
         
         build_temp = Path(self.build_temp)
         build_temp.mkdir(parents=True, exist_ok=True)
@@ -80,64 +67,7 @@ class CMakeBuild(build_ext):
         )
 
 
-# Read README for long description
-readme_path = Path(__file__).parent / "README.md"
-if readme_path.exists():
-    long_description = readme_path.read_text()
-else:
-    long_description = "Differentiable Muskingum-Cunge routing library"
-
-
 setup(
-    name="droute",
-    version=__version__,
-    author="Darri Eythorsson",
-    author_email="darri.eythorsson@ucalgary.ca",
-    description="Differentiable river routing library for hydrological modeling",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
-    license="MIT",
-    url="https://github.com/DarriEy/dRoute",
-    
     ext_modules=[CMakeExtension("_droute_core")],
     cmdclass={"build_ext": CMakeBuild},
-    
-    packages=["droute"],
-    package_dir={"": "python"},
-    py_modules=["pydmc_route"],  # Backwards compatibility shim
-    include_package_data=True,
-    
-    python_requires=">=3.8",
-    install_requires=[
-        "numpy>=1.20.0",
-    ],
-    extras_require={
-        "torch": ["torch>=1.9.0"],
-        "dev": [
-            "pytest>=6.0",
-            "pytest-cov",
-            "black",
-            "flake8",
-        ],
-    },
-    
-    classifiers=[
-        "Development Status :: 4 - Beta",
-        "Intended Audience :: Science/Research",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: 3.12",
-        "Programming Language :: Python :: 3.13",
-        "Programming Language :: C++",
-        "Operating System :: OS Independent",
-        "Topic :: Scientific/Engineering",
-        "Topic :: Scientific/Engineering :: Hydrology",
-    ],
-    
-    keywords="hydrology, routing, muskingum-cunge, differentiable, machine-learning",
-    
-    zip_safe=False,
 )
