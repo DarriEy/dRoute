@@ -41,7 +41,12 @@
 #include <sunmatrix/sunmatrix_dense.h>
 #include <sunlinsol/sunlinsol_dense.h>
 #include <sundials/sundials_types.h>
+#include <sundials/sundials_context.h>
 #include <sunnonlinsol/sunnonlinsol_newton.h>
+
+#ifndef SUN_COMM_NULL
+#define SUN_COMM_NULL 0
+#endif
 #endif
 
 namespace dmc {
@@ -311,7 +316,7 @@ inline SaintVenantRouter::SaintVenantRouter(Network& network, SaintVenantConfig 
     
 #ifdef DMC_ENABLE_SUNDIALS
     // Create SUNDIALS context
-    int flag = SUNContext_Create(nullptr, &sunctx_);
+    int flag = SUNContext_Create(SUN_COMM_NULL, &sunctx_);
     if (flag != 0) {
         std::cerr << "Error creating SUNDIALS context" << std::endl;
         return;

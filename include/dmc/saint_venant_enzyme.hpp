@@ -38,6 +38,11 @@
 #include <sunmatrix/sunmatrix_dense.h>
 #include <sunlinsol/sunlinsol_dense.h>
 #include <sundials/sundials_types.h>
+#include <sundials/sundials_context.h>
+
+#ifndef SUN_COMM_NULL
+#define SUN_COMM_NULL 0
+#endif
 #endif
 
 // Additional Enzyme declaration for forward-mode AD
@@ -324,7 +329,7 @@ inline SaintVenantEnzyme::~SaintVenantEnzyme() {
 
 inline void SaintVenantEnzyme::setup_cvodes() {
     // Create SUNDIALS context
-    int flag = SUNContext_Create(nullptr, &sunctx_);
+    int flag = SUNContext_Create(SUN_COMM_NULL, &sunctx_);
     if (flag != 0) {
         std::cerr << "Error creating SUNDIALS context" << std::endl;
         return;
