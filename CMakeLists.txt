@@ -246,6 +246,21 @@ endif()
 # JSON for GeoJSON parsing
 target_link_libraries(dmc_route INTERFACE nlohmann_json::nlohmann_json)
 
+# Homebrew LLVM on macOS ships its own libc++ that matches the compiler headers.
+# When using that toolchain, prefer its lib directory to avoid std:: symbols missing at link.
+set(DMC_LLVM_LIBDIR "")
+if(APPLE)
+    if(DEFINED ENV{LLVM_PREFIX})
+        set(DMC_LLVM_LIBDIR "$ENV{LLVM_PREFIX}/lib")
+    else()
+        get_filename_component(_dmc_clang_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        get_filename_component(_dmc_llvm_prefix "${_dmc_clang_bin}" DIRECTORY)
+        if(EXISTS "${_dmc_llvm_prefix}/lib/libc++.dylib")
+            set(DMC_LLVM_LIBDIR "${_dmc_llvm_prefix}/lib")
+        endif()
+    endif()
+endif()
+
 # ============ Shared Library Wrapper ============
 if(DMC_BUILD_SHARED)
     add_library(dmc_route_shared SHARED
@@ -257,6 +272,10 @@ if(DMC_BUILD_SHARED)
         VERSION ${PROJECT_VERSION}
         SOVERSION ${PROJECT_VERSION_MAJOR}
     )
+    if(DMC_LLVM_LIBDIR)
+        target_link_directories(dmc_route_shared PRIVATE "${DMC_LLVM_LIBDIR}")
+        target_link_options(dmc_route_shared PRIVATE "-Wl,-rpath,${DMC_LLVM_LIBDIR}")
+    endif()
 endif()
 
 # ============ Python Bindings (pybind11) ============
@@ -287,6 +306,10 @@ if(DMC_BUILD_PYTHON)
     pybind11_add_module(_droute_core python/bindings.cpp)
     target_link_libraries(_droute_core PRIVATE dmc_route)
     target_compile_definitions(_droute_core PRIVATE DMC_VERSION="${DMC_VERSION}")
+    if(DMC_LLVM_LIBDIR)
+        target_link_directories(_droute_core PRIVATE "${DMC_LLVM_LIBDIR}")
+        target_link_options(_droute_core PRIVATE "-Wl,-rpath,${DMC_LLVM_LIBDIR}")
+    endif()
     
     # Set output name and properties
     if(DEFINED CMAKE_LIBRARY_OUTPUT_DIRECTORY)
@@ -323,6 +346,10 @@ add_executable(dmc_route_run src/main.cpp)
 target_link_libraries(dmc_route_run PRIVATE dmc_route)
 if(APPLE)
     target_link_libraries(dmc_route_run PRIVATE c++)
+endif()
+if(DMC_LLVM_LIBDIR)
+    target_link_directories(dmc_route_run PRIVATE "${DMC_LLVM_LIBDIR}")
+    target_link_options(dmc_route_run PRIVATE "-Wl,-rpath,${DMC_LLVM_LIBDIR}")
 endif()
 
 # ============ Tests ============

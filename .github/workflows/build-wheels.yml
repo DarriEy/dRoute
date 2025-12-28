@@ -59,6 +59,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install cmake ninja netcdf llvm libomp
+          echo "LLVM_PREFIX=$(brew --prefix llvm)" >> $GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp):$CMAKE_PREFIX_PATH" >> $GITHUB_ENV
 
       - name: Build Enzyme from source (Ubuntu)
