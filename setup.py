@@ -74,6 +74,8 @@ class CMakeBuild(build_ext):
 
 
 setup(
+    name="droute",
+    version="0.5.0",
     ext_modules=[CMakeExtension("_droute_core")],
     cmdclass={"build_ext": CMakeBuild},
 )
