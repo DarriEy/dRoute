@@ -274,6 +274,25 @@ if(DMC_LLVM_LIBDIR)
         set(DMC_LLVM_LIBCXXABI "${DMC_LLVM_LIBDIR}/libc++abi.1.dylib")
     endif()
 endif()
+if(APPLE)
+    execute_process(
+        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libc++.dylib
+        OUTPUT_VARIABLE _dmc_libcxx_path
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(_dmc_libcxx_path AND NOT _dmc_libcxx_path STREQUAL "libc++.dylib" AND EXISTS "${_dmc_libcxx_path}")
+        get_filename_component(DMC_LLVM_LIBDIR "${_dmc_libcxx_path}" DIRECTORY)
+        set(DMC_LLVM_LIBCXX "${_dmc_libcxx_path}")
+    endif()
+    execute_process(
+        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libc++abi.dylib
+        OUTPUT_VARIABLE _dmc_libcxxabi_path
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(_dmc_libcxxabi_path AND NOT _dmc_libcxxabi_path STREQUAL "libc++abi.dylib" AND EXISTS "${_dmc_libcxxabi_path}")
+        set(DMC_LLVM_LIBCXXABI "${_dmc_libcxxabi_path}")
+    endif()
+endif()
 
 # ============ Shared Library Wrapper ============
 if(DMC_BUILD_SHARED)
