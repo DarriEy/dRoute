@@ -32,7 +32,7 @@ A differentiable river routing library for hydrological modeling. dRoute impleme
 pip install droute
 ```
 
-**From source:**
+**From source (editable):**
 
 ```bash
 git clone https://github.com/DarriEy/dRoute.git
@@ -40,13 +40,17 @@ cd dRoute
 pip install -e .
 ```
 
-**Note:** Building from source requires CMake 3.15+ and a C++17 compiler.
+**Build requirements:** CMake 3.15+, a C++17 compiler, and Python development headers. Optional features (NetCDF, Enzyme, SUNDIALS) require those libraries installed.
+
+**Pass CMake options via `CMAKE_ARGS`:**
+
+```bash
+CMAKE_ARGS="-DDMC_ENABLE_NETCDF=ON -DDMC_ENABLE_ENZYME=ON -DDMC_ENABLE_SUNDIALS=ON" pip install -e .
+```
 
 ### Test Installation
 
 ```bash
-cd ..
-export PYTHONPATH=$PYTHONPATH:$(pwd)/build/python
 python -c "import droute; print(f'dRoute v{droute.__version__} loaded')"
 ```
 
@@ -54,13 +58,13 @@ python -c "import droute; print(f'dRoute v{droute.__version__} loaded')"
 
 ```bash
 # Forward pass comparison (all methods)
-PYTHONPATH=build/python python python/test_routing_with_data.py --data-dir data
+python python/test_routing_with_data.py --data-dir data
 
 # Fast optimization with Enzyme kernels (30 epochs in ~30s)
-PYTHONPATH=build/python python python/test_routing_with_data.py --data-dir data --optimize --fast
+python python/test_routing_with_data.py --data-dir data --optimize --fast
 
 # Include Saint-Venant high-fidelity benchmark
-PYTHONPATH=build/python python python/test_routing_with_data.py --data-dir data --sve
+python python/test_routing_with_data.py --data-dir data --sve
 ```
 
 ### Download Sample Data
@@ -246,14 +250,14 @@ for epoch in range(30):
 ### Build with All Features
 
 ```bash
-cmake .. \
+cmake -S . -B build \
     -DDMC_BUILD_PYTHON=ON \
     -DDMC_ENABLE_ENZYME=ON \
     -DDMC_ENABLE_SUNDIALS=ON \
     -DSUNDIALS_ROOT=/path/to/sundials/install \
     -DDMC_ENABLE_NETCDF=ON
 
-make -j4
+cmake --build build -j4
 ```
 
 ### macOS (Apple Silicon)
@@ -261,8 +265,8 @@ make -j4
 ```bash
 brew install cmake netcdf sundials
 
-cmake .. -DDMC_BUILD_PYTHON=ON -DDMC_ENABLE_SUNDIALS=ON
-make -j$(sysctl -n hw.ncpu)
+cmake -S . -B build -DDMC_BUILD_PYTHON=ON -DDMC_ENABLE_SUNDIALS=ON
+cmake --build build -j$(sysctl -n hw.ncpu)
 ```
 
 ### Linux HPC
@@ -270,12 +274,12 @@ make -j$(sysctl -n hw.ncpu)
 ```bash
 module load cmake gcc python sundials netcdf
 
-cmake .. \
+cmake -S . -B build \
     -DDMC_BUILD_PYTHON=ON \
     -DDMC_ENABLE_SUNDIALS=ON \
     -DCMAKE_CXX_COMPILER=g++
 
-make -j8
+cmake --build build -j8
 ```
 
 ## Data Format
@@ -347,15 +351,13 @@ dRoute/
 
 ```bash
 # C++ tests
-cd build && ctest --output-on-failure
+ctest --test-dir build --output-on-failure
 
-# Python tests
-cd ..
-PYTHONPATH=build/python python python/test_routing_with_data.py --data-dir data
+# Python integration run (requires installed droute)
+python python/test_routing_with_data.py --data-dir data
 
-# Full test suite with optimization and SVE
-PYTHONPATH=build/python python python/test_routing_with_data.py \
-    --data-dir data --optimize --fast --sve
+# Full run with optimization and SVE
+python python/test_routing_with_data.py --data-dir data --optimize --fast --sve
 ```
 
 ## Citation
