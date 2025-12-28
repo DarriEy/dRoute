@@ -31,12 +31,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build libnetcdf-dev \
-            llvm-17-dev clang-17 lld-17 libclang-17-dev
+            llvm-17-dev clang-17 lld-17 libclang-17-dev libomp-17-dev
 
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake ninja netcdf llvm
+          brew install cmake ninja netcdf llvm libomp
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp):$CMAKE_PREFIX_PATH" >> $GITHUB_ENV
 
       - name: Build Enzyme from source (Ubuntu)
         if: runner.os == 'Linux'
@@ -93,6 +94,24 @@ jobs:
           echo "CC=$LLVM_PREFIX/bin/clang" >> $GITHUB_ENV
           echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
 
+      - name: Build SUNDIALS from source
+        run: |
+          git clone --depth 1 https://github.com/LLNL/sundials.git
+          cmake -S sundials -B sundials/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/sundials-install" \
+            -DBUILD_SHARED_LIBS=ON \
+            -DEXAMPLES_ENABLE=OFF \
+            -DUNIT_TEST_ENABLE=OFF \
+            -DBUILD_CVODES=ON \
+            -DBUILD_ARKODE=OFF \
+            -DBUILD_IDA=OFF \
+            -DBUILD_IDAS=OFF \
+            -DBUILD_KINSOL=OFF
+          cmake --build sundials/build
+          cmake --build sundials/build --target install
+          echo "SUNDIALS_ROOT=$PWD/sundials-install" >> $GITHUB_ENV
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
@@ -106,7 +125,10 @@ jobs:
             -DDMC_BUILD_TESTS=ON \
             -DDMC_ENABLE_NETCDF=ON \
             -DDMC_ENABLE_ENZYME=ON \
-            -DENZYME_PLUGIN="${ENZYME_PLUGIN}"
+            -DENZYME_PLUGIN="${ENZYME_PLUGIN}" \
+            -DDMC_ENABLE_SUNDIALS=ON \
+            -DSUNDIALS_ROOT="${SUNDIALS_ROOT}" \
+            -DDMC_ENABLE_OPENMP=ON
           cmake --build build
 
       - name: Run C++ tests
@@ -116,7 +138,7 @@ jobs:
 
       - name: Install Python package
         run: |
-          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN}" \
+          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN} -DDMC_ENABLE_SUNDIALS=ON -DSUNDIALS_ROOT=${SUNDIALS_ROOT} -DDMC_ENABLE_OPENMP=ON" \
             pip install -e .
 
       - name: Run Python tests

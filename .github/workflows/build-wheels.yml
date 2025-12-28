@@ -47,7 +47,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build libnetcdf-dev \
-            llvm-17-dev clang-17 lld-17 libclang-17-dev
+            llvm-17-dev clang-17 lld-17 libclang-17-dev libomp-17-dev
 
       - name: Build Enzyme from source (Ubuntu)
         run: |
@@ -75,6 +75,24 @@ jobs:
           echo "CC=clang-17" >> $GITHUB_ENV
           echo "CXX=clang++-17" >> $GITHUB_ENV
 
+      - name: Build SUNDIALS from source (Ubuntu)
+        run: |
+          git clone --depth 1 https://github.com/LLNL/sundials.git
+          cmake -S sundials -B sundials/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/sundials-install" \
+            -DBUILD_SHARED_LIBS=ON \
+            -DEXAMPLES_ENABLE=OFF \
+            -DUNIT_TEST_ENABLE=OFF \
+            -DBUILD_CVODES=ON \
+            -DBUILD_ARKODE=OFF \
+            -DBUILD_IDA=OFF \
+            -DBUILD_IDAS=OFF \
+            -DBUILD_KINSOL=OFF
+          cmake --build sundials/build
+          cmake --build sundials/build --target install
+          echo "SUNDIALS_ROOT=$PWD/sundials-install" >> $GITHUB_ENV
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
@@ -95,8 +113,9 @@ jobs:
             -DDMC_BUILD_TESTS=ON \
             -DDMC_BUILD_PYTHON=ON \
             -DDMC_BUILD_SHARED=ON \
-            -DDMC_ENABLE_OPENMP=OFF \
-            -DDMC_ENABLE_SUNDIALS=OFF \
+            -DDMC_ENABLE_OPENMP=ON \
+            -DDMC_ENABLE_SUNDIALS=ON \
+            -DSUNDIALS_ROOT="${SUNDIALS_ROOT}" \
             -DENZYME_PLUGIN="${ENZYME_PLUGIN}"
           cmake --build build
 
