@@ -13,7 +13,7 @@ import sys
 import subprocess
 from pathlib import Path
 
-from setuptools import setup, Extension
+from setuptools import setup, Extension, find_packages
 from setuptools.command.build_ext import build_ext
 
 
@@ -76,6 +76,8 @@ class CMakeBuild(build_ext):
 setup(
     name="droute",
     version="0.5.0",
+    packages=find_packages(where="python"),
+    package_dir={"": "python"},
     ext_modules=[CMakeExtension("_droute_core")],
     cmdclass={"build_ext": CMakeBuild},
 )
