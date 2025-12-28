@@ -30,12 +30,46 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libnetcdf-dev
+          sudo apt-get install -y cmake ninja-build libnetcdf-dev \
+            llvm-17-dev clang-17 lld-17 libclang-17-dev
 
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake ninja netcdf
+          brew install cmake ninja netcdf llvm
+
+      - name: Build Enzyme from source (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          git clone --depth 1 https://github.com/EnzymeAD/Enzyme.git
+          LLVM_CONFIG=llvm-config-17
+          cmake -S Enzyme -B Enzyme/build -DLLVM_DIR="$($LLVM_CONFIG --cmakedir)"
+          cmake --build Enzyme/build
+          ENZYME_PLUGIN=$(find Enzyme/build -name "ClangEnzyme*.so" -o -name "ClangEnzyme*.dylib" | head -n 1)
+          if [ -z "$ENZYME_PLUGIN" ]; then
+            echo "Enzyme plugin not found in build output" >&2
+            exit 1
+          fi
+          echo "ENZYME_PLUGIN=$ENZYME_PLUGIN" >> $GITHUB_ENV
+          echo "CC=clang-17" >> $GITHUB_ENV
+          echo "CXX=clang++-17" >> $GITHUB_ENV
+
+      - name: Build Enzyme from source (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          git clone --depth 1 https://github.com/EnzymeAD/Enzyme.git
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
+          cmake -S Enzyme -B Enzyme/build -DLLVM_DIR="$($LLVM_CONFIG --cmakedir)"
+          cmake --build Enzyme/build
+          ENZYME_PLUGIN=$(find Enzyme/build -name "ClangEnzyme*.dylib" -o -name "ClangEnzyme*.so" | head -n 1)
+          if [ -z "$ENZYME_PLUGIN" ]; then
+            echo "Enzyme plugin not found in build output" >&2
+            exit 1
+          fi
+          echo "ENZYME_PLUGIN=$ENZYME_PLUGIN" >> $GITHUB_ENV
+          echo "CC=$LLVM_PREFIX/bin/clang" >> $GITHUB_ENV
+          echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
 
       - name: Install Python deps
         run: |
@@ -48,7 +82,9 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DDMC_BUILD_PYTHON=ON \
             -DDMC_BUILD_TESTS=ON \
-            -DDMC_ENABLE_NETCDF=ON
+            -DDMC_ENABLE_NETCDF=ON \
+            -DDMC_ENABLE_ENZYME=ON \
+            -DENZYME_PLUGIN="${ENZYME_PLUGIN}"
           cmake --build build
 
       - name: Run C++ tests
@@ -58,7 +94,8 @@ jobs:
 
       - name: Install Python package
         run: |
-          pip install -e .
+          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN}" \
+            pip install -e .
 
       - name: Run Python tests
         run: |

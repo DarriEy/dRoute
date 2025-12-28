@@ -354,7 +354,9 @@ if(DMC_BUILD_TESTS)
     # AD Backend Comparison test (CoDiPack vs Enzyme)
     add_executable(test_ad_backend_comparison tests/test_ad_backend_comparison.cpp)
     target_link_libraries(test_ad_backend_comparison PRIVATE dmc_route)
-    add_test(NAME ad_backend_comparison COMMAND test_ad_backend_comparison)
+    if(DMC_ENABLE_ENZYME AND DMC_ENZYME_AVAILABLE)
+        add_test(NAME ad_backend_comparison COMMAND test_ad_backend_comparison)
+    endif()
 endif()
 
 # OpenMP linking for parallel routing
