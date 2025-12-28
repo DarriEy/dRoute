@@ -164,13 +164,21 @@ jobs:
 
       - name: Editable install (pip -e) first
         run: |
+          EXTRA_CMAKE_ARGS=""
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            EXTRA_CMAKE_ARGS="-DDMC_BUILD_RUN=OFF"
+          fi
           SETUPTOOLS_ENABLE_FEATURES="legacy-editable" \
-          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_VERBOSE_MAKEFILE=ON -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN} -DDMC_ENABLE_SUNDIALS=ON -DSUNDIALS_ROOT=${SUNDIALS_ROOT} -DDMC_ENABLE_OPENMP=ON" \
+          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_VERBOSE_MAKEFILE=ON -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN} -DDMC_ENABLE_SUNDIALS=ON -DSUNDIALS_ROOT=${SUNDIALS_ROOT} -DDMC_ENABLE_OPENMP=ON ${EXTRA_CMAKE_ARGS}" \
             pip -v install -e . --no-build-isolation
           python -c "import droute; print(f'Editable install OK: {droute.__version__}')"
 
       - name: Full CMake build (all flags)
         run: |
+          EXTRA_CMAKE_ARGS=""
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            EXTRA_CMAKE_ARGS="-DDMC_BUILD_RUN=OFF"
+          fi
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DDMC_ENABLE_AD=ON \
@@ -182,7 +190,8 @@ jobs:
             -DDMC_ENABLE_OPENMP=ON \
             -DDMC_ENABLE_SUNDIALS=ON \
             -DSUNDIALS_ROOT="${SUNDIALS_ROOT}" \
-            -DENZYME_PLUGIN="${ENZYME_PLUGIN}"
+            -DENZYME_PLUGIN="${ENZYME_PLUGIN}" \
+            ${EXTRA_CMAKE_ARGS}
           cmake --build build
 
       - name: Run C++ tests

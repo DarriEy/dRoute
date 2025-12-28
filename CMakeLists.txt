@@ -387,20 +387,23 @@ if(DMC_ENABLE_ENZYME AND DMC_ENZYME_AVAILABLE AND DMC_BUILD_PYTHON AND TARGET _d
 endif()
 
 # ============ Executable for Testing ============
-add_executable(dmc_route_run src/main.cpp)
-target_link_libraries(dmc_route_run PRIVATE dmc_route)
-if(APPLE)
-    target_link_libraries(dmc_route_run PRIVATE c++)
-endif()
-if(DMC_LLVM_LIBDIR)
-    target_link_directories(dmc_route_run PRIVATE "${DMC_LLVM_LIBDIR}")
-    target_link_options(dmc_route_run PRIVATE "-Wl,-rpath,${DMC_LLVM_LIBDIR}")
-endif()
-if(DMC_LLVM_LIBCXX)
-    target_link_libraries(dmc_route_run PRIVATE "${DMC_LLVM_LIBCXX}")
-endif()
-if(DMC_LLVM_LIBCXXABI)
-    target_link_libraries(dmc_route_run PRIVATE "${DMC_LLVM_LIBCXXABI}")
+option(DMC_BUILD_RUN "Build dmc_route_run CLI executable" ON)
+if(DMC_BUILD_RUN)
+    add_executable(dmc_route_run src/main.cpp)
+    target_link_libraries(dmc_route_run PRIVATE dmc_route)
+    if(APPLE)
+        target_link_libraries(dmc_route_run PRIVATE c++)
+    endif()
+    if(DMC_LLVM_LIBDIR)
+        target_link_directories(dmc_route_run PRIVATE "${DMC_LLVM_LIBDIR}")
+        target_link_options(dmc_route_run PRIVATE "-Wl,-rpath,${DMC_LLVM_LIBDIR}")
+    endif()
+    if(DMC_LLVM_LIBCXX)
+        target_link_libraries(dmc_route_run PRIVATE "${DMC_LLVM_LIBCXX}")
+    endif()
+    if(DMC_LLVM_LIBCXXABI)
+        target_link_libraries(dmc_route_run PRIVATE "${DMC_LLVM_LIBCXXABI}")
+    endif()
 endif()
 
 # ============ Tests ============
@@ -443,7 +446,9 @@ endif()
 # OpenMP linking for parallel routing
 if(DMC_ENABLE_OPENMP)
     target_link_libraries(dmc_route INTERFACE OpenMP::OpenMP_CXX)
-    target_link_libraries(dmc_route_run PRIVATE OpenMP::OpenMP_CXX)
+    if(DMC_BUILD_RUN)
+        target_link_libraries(dmc_route_run PRIVATE OpenMP::OpenMP_CXX)
+    endif()
     if(DMC_BUILD_TESTS)
         target_link_libraries(test_comprehensive PRIVATE OpenMP::OpenMP_CXX)
         target_link_libraries(test_ad_backend_comparison PRIVATE OpenMP::OpenMP_CXX)
@@ -469,9 +474,11 @@ if(DMC_BUILD_SHARED)
     )
 endif()
 
-install(TARGETS dmc_route_run
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+if(DMC_BUILD_RUN)
+    install(TARGETS dmc_route_run
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
 
 # ============ Package Configuration ============
 include(CMakePackageConfigHelpers)
