@@ -181,6 +181,7 @@ jobs:
             EXTRA_CMAKE_ARGS="-DDMC_BUILD_RUN=OFF"
           fi
           cmake -B build -G Ninja \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_BUILD_TYPE=Release \
             -DDMC_ENABLE_AD=ON \
             -DDMC_ENABLE_ENZYME=ON \
