@@ -321,6 +321,9 @@ endif()
 # ============ Executable for Testing ============
 add_executable(dmc_route_run src/main.cpp)
 target_link_libraries(dmc_route_run PRIVATE dmc_route)
+if(APPLE)
+    target_link_libraries(dmc_route_run PRIVATE c++)
+endif()
 
 # ============ Tests ============
 if(DMC_BUILD_TESTS)
