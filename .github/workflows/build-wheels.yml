@@ -162,18 +162,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install numpy pytest wheel setuptools
 
-      - name: Editable install (pip -e) first
-        env:
-          PIP_USE_PEP517: "0"
-          SETUPTOOLS_ENABLE_FEATURES: "legacy-editable"
+      - name: Build and install Python package
         run: |
           EXTRA_CMAKE_ARGS=""
           if [ "${RUNNER_OS}" = "macOS" ]; then
             EXTRA_CMAKE_ARGS="-DDMC_BUILD_RUN=OFF"
           fi
           CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_VERBOSE_MAKEFILE=ON -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN} -DDMC_ENABLE_SUNDIALS=ON -DSUNDIALS_ROOT=${SUNDIALS_ROOT} -DDMC_ENABLE_OPENMP=ON ${EXTRA_CMAKE_ARGS}" \
-            pip -v install -e . --no-build-isolation
-          python -c "import droute; print(f'Editable install OK: {droute.__version__}')"
+            pip -v install . --no-build-isolation
+          python -c "import droute; print(f'Install OK: {droute.__version__}')"
 
       - name: Full CMake build (all flags)
         run: |
