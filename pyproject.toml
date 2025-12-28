@@ -72,3 +72,8 @@ target-version = ['py38', 'py39', 'py310', 'py311', 'py312', 'py313']
 testpaths = ["tests/python"]
 python_files = ["test_*.py"]
 addopts = "-v --strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "requires_data: marks tests that require sample data files",
+    "enzyme: marks tests that require Enzyme AD support",
+]

@@ -11,6 +11,7 @@ Requires:
 import os
 import sys
 import subprocess
+from pathlib import Path
 
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
