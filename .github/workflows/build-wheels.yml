@@ -32,8 +32,13 @@ jobs:
           path: dist/*.tar.gz
 
   build_wheels_test:
-    name: Build wheels test (full flags)
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }} (full flags)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -41,15 +46,23 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install system deps (Ubuntu)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build libnetcdf-dev \
             llvm-17-dev clang-17 lld-17 libclang-17-dev libomp-17-dev
 
+      - name: Install system deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja netcdf llvm libomp
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp):$CMAKE_PREFIX_PATH" >> $GITHUB_ENV
+
       - name: Build Enzyme from source (Ubuntu)
+        if: runner.os == 'Linux'
         run: |
           git clone --depth 1 --recurse-submodules https://github.com/EnzymeAD/Enzyme.git
           ENZYME_SRC="Enzyme"
@@ -75,7 +88,55 @@ jobs:
           echo "CC=clang-17" >> $GITHUB_ENV
           echo "CXX=clang++-17" >> $GITHUB_ENV
 
+      - name: Build Enzyme from source (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/EnzymeAD/Enzyme.git
+          ENZYME_SRC="Enzyme"
+          if [ ! -f "$ENZYME_SRC/CMakeLists.txt" ]; then
+            if [ -f "Enzyme/enzyme/CMakeLists.txt" ]; then
+              ENZYME_SRC="Enzyme/enzyme"
+            elif [ -f "Enzyme/Enzyme/CMakeLists.txt" ]; then
+              ENZYME_SRC="Enzyme/Enzyme"
+            else
+              echo "Enzyme CMakeLists.txt not found" >&2
+              exit 1
+            fi
+          fi
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
+          cmake -S "$ENZYME_SRC" -B Enzyme/build -DLLVM_DIR="$($LLVM_CONFIG --cmakedir)"
+          cmake --build Enzyme/build
+          ENZYME_PLUGIN=$(find Enzyme/build -name "ClangEnzyme*.dylib" -o -name "ClangEnzyme*.so" | head -n 1)
+          if [ -z "$ENZYME_PLUGIN" ]; then
+            echo "Enzyme plugin not found in build output" >&2
+            exit 1
+          fi
+          echo "ENZYME_PLUGIN=$ENZYME_PLUGIN" >> $GITHUB_ENV
+          echo "CC=$LLVM_PREFIX/bin/clang" >> $GITHUB_ENV
+          echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
+
       - name: Build SUNDIALS from source (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          git clone --depth 1 https://github.com/LLNL/sundials.git
+          cmake -S sundials -B sundials/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/sundials-install" \
+            -DBUILD_SHARED_LIBS=ON \
+            -DEXAMPLES_ENABLE=OFF \
+            -DUNIT_TEST_ENABLE=OFF \
+            -DBUILD_CVODES=ON \
+            -DBUILD_ARKODE=OFF \
+            -DBUILD_IDA=OFF \
+            -DBUILD_IDAS=OFF \
+            -DBUILD_KINSOL=OFF
+          cmake --build sundials/build
+          cmake --build sundials/build --target install
+          echo "SUNDIALS_ROOT=$PWD/sundials-install" >> $GITHUB_ENV
+
+      - name: Build SUNDIALS from source (macOS)
+        if: runner.os == 'macOS'
         run: |
           git clone --depth 1 https://github.com/LLNL/sundials.git
           cmake -S sundials -B sundials/build \
@@ -100,7 +161,8 @@ jobs:
 
       - name: Editable install (pip -e) first
         run: |
-          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" pip install -e .
+          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DDMC_ENABLE_ENZYME=ON -DENZYME_PLUGIN=${ENZYME_PLUGIN} -DDMC_ENABLE_SUNDIALS=ON -DSUNDIALS_ROOT=${SUNDIALS_ROOT} -DDMC_ENABLE_OPENMP=ON" \
+            pip install -e .
           python -c "import droute; print(f'Editable install OK: {droute.__version__}')"
 
       - name: Full CMake build (all flags)
