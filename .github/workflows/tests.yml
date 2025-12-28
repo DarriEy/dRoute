@@ -41,9 +41,20 @@ jobs:
       - name: Build Enzyme from source (Ubuntu)
         if: runner.os == 'Linux'
         run: |
-          git clone --depth 1 https://github.com/EnzymeAD/Enzyme.git
+          git clone --depth 1 --recurse-submodules https://github.com/EnzymeAD/Enzyme.git
+          ENZYME_SRC="Enzyme"
+          if [ ! -f "$ENZYME_SRC/CMakeLists.txt" ]; then
+            if [ -f "Enzyme/enzyme/CMakeLists.txt" ]; then
+              ENZYME_SRC="Enzyme/enzyme"
+            elif [ -f "Enzyme/Enzyme/CMakeLists.txt" ]; then
+              ENZYME_SRC="Enzyme/Enzyme"
+            else
+              echo "Enzyme CMakeLists.txt not found" >&2
+              exit 1
+            fi
+          fi
           LLVM_CONFIG=llvm-config-17
-          cmake -S Enzyme -B Enzyme/build -DLLVM_DIR="$($LLVM_CONFIG --cmakedir)"
+          cmake -S "$ENZYME_SRC" -B Enzyme/build -DLLVM_DIR="$($LLVM_CONFIG --cmakedir)"
           cmake --build Enzyme/build
           ENZYME_PLUGIN=$(find Enzyme/build -name "ClangEnzyme*.so" -o -name "ClangEnzyme*.dylib" | head -n 1)
           if [ -z "$ENZYME_PLUGIN" ]; then
@@ -57,10 +68,21 @@ jobs:
       - name: Build Enzyme from source (macOS)
         if: runner.os == 'macOS'
         run: |
-          git clone --depth 1 https://github.com/EnzymeAD/Enzyme.git
+          git clone --depth 1 --recurse-submodules https://github.com/EnzymeAD/Enzyme.git
+          ENZYME_SRC="Enzyme"
+          if [ ! -f "$ENZYME_SRC/CMakeLists.txt" ]; then
+            if [ -f "Enzyme/enzyme/CMakeLists.txt" ]; then
+              ENZYME_SRC="Enzyme/enzyme"
+            elif [ -f "Enzyme/Enzyme/CMakeLists.txt" ]; then
+              ENZYME_SRC="Enzyme/Enzyme"
+            else
+              echo "Enzyme CMakeLists.txt not found" >&2
+              exit 1
+            fi
+          fi
           LLVM_PREFIX="$(brew --prefix llvm)"
           LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
-          cmake -S Enzyme -B Enzyme/build -DLLVM_DIR="$($LLVM_CONFIG --cmakedir)"
+          cmake -S "$ENZYME_SRC" -B Enzyme/build -DLLVM_DIR="$($LLVM_CONFIG --cmakedir)"
           cmake --build Enzyme/build
           ENZYME_PLUGIN=$(find Enzyme/build -name "ClangEnzyme*.dylib" -o -name "ClangEnzyme*.so" | head -n 1)
           if [ -z "$ENZYME_PLUGIN" ]; then
