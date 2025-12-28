@@ -1,5 +1,10 @@
 # dRoute: Differentiable River Routing Library
 
+[![Build Status](https://github.com/DarriEy/dRoute/actions/workflows/build-wheels.yml/badge.svg)](https://github.com/DarriEy/dRoute/actions/workflows/build-wheels.yml)
+[![PyPI version](https://badge.fury.io/py/droute.svg)](https://badge.fury.io/py/droute)
+[![Python Versions](https://img.shields.io/pypi/pyversions/droute.svg)](https://pypi.org/project/droute/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A differentiable river routing library for hydrological modeling. dRoute implements multiple routing methods with automatic differentiation support, enabling gradient-based parameter optimization and integration with machine learning workflows.
 
 ***Note dRoute is in active development expect unfinished code***
