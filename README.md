@@ -26,13 +26,21 @@ A differentiable river routing library for hydrological modeling. dRoute impleme
 
 ### Installation
 
+**From PyPI (recommended):**
+
+```bash
+pip install droute
+```
+
+**From source:**
+
 ```bash
 git clone https://github.com/DarriEy/dRoute.git
 cd dRoute
-mkdir build && cd build
-cmake .. -DDMC_BUILD_PYTHON=ON
-make -j4
+pip install -e .
 ```
+
+**Note:** Building from source requires CMake 3.15+ and a C++17 compiler.
 
 ### Test Installation
 
@@ -83,7 +91,7 @@ for i in range(10):
     reach.length = 5000.0  # meters
     reach.slope = 0.001
     reach.manning_n = 0.035
-    reach.downstream_id = i + 1 if i < 9 else -1  # -1 = outlet
+    reach.downstream_junction_id = i + 1 if i < 9 else -1  # -1 = outlet
     network.add_reach(reach)
 network.build_topology()
 

@@ -22,6 +22,13 @@ from pathlib import Path
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
+# Read version from single source of truth
+version_file = Path(__file__).parent / "python" / "droute" / "_version.py"
+version_info = {}
+with open(version_file) as f:
+    exec(f.read(), version_info)
+__version__ = version_info["__version__"]
+
 
 class CMakeExtension(Extension):
     """CMake extension for building with cmake."""
@@ -82,26 +89,27 @@ else:
 
 
 setup(
-    name="pydmc_route",
-    version="0.5.0",
-    author="dMC-Route Authors",
-    author_email="",
+    name="droute",
+    version=__version__,
+    author="Darri Eythorsson",
+    author_email="darri.eythorsson@ucalgary.ca",
     description="Differentiable river routing library for hydrological modeling",
     long_description=long_description,
     long_description_content_type="text/markdown",
     license="MIT",
-    url="https://github.com/your-org/dmc-route",
+    url="https://github.com/DarriEy/dRoute",
     
-    ext_modules=[CMakeExtension("pydmc_route")],
+    ext_modules=[CMakeExtension("_droute_core")],
     cmdclass={"build_ext": CMakeBuild},
     
     packages=["droute"],
     package_dir={"": "python"},
+    py_modules=["pydmc_route"],  # Backwards compatibility shim
     include_package_data=True,
     
     python_requires=">=3.8",
     install_requires=[
-        "numpy>=1.19.0",
+        "numpy>=1.20.0",
     ],
     extras_require={
         "torch": ["torch>=1.9.0"],
@@ -121,7 +129,11 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
         "Programming Language :: C++",
+        "Operating System :: OS Independent",
+        "Topic :: Scientific/Engineering",
         "Topic :: Scientific/Engineering :: Hydrology",
     ],
     

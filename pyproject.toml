@@ -3,14 +3,14 @@ requires = ["setuptools>=45", "wheel", "cmake>=3.15", "pybind11>=2.10"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pydmc_route"
-version = "0.5.0"
+name = "droute"
+dynamic = ["version"]
 description = "Differentiable river routing library for hydrological modeling"
 readme = "README.md"
-license = "MIT"
+license = {text = "MIT"}
 requires-python = ">=3.8"
 authors = [
-    {name = "dMC-Route Authors"}
+    {name = "Darri Eythorsson", email = "darri.eythorsson@ucalgary.ca"}
 ]
 keywords = ["hydrology", "routing", "muskingum-cunge", "differentiable", "machine-learning"]
 classifiers = [
@@ -21,12 +21,16 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: C++",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Hydrology",
 ]
 
 dependencies = [
-    "numpy>=1.19.0",
+    "numpy>=1.20.0",
 ]
 
 [project.optional-dependencies]
@@ -39,9 +43,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/dmc-route"
-Documentation = "https://github.com/your-org/dmc-route#readme"
-Repository = "https://github.com/your-org/dmc-route"
+Homepage = "https://github.com/DarriEy/dRoute"
+Documentation = "https://github.com/DarriEy/dRoute#readme"
+Repository = "https://github.com/DarriEy/dRoute"
+"Bug Tracker" = "https://github.com/DarriEy/dRoute/issues"
+"Source Code" = "https://github.com/DarriEy/dRoute"
 
 # Don't look for Python packages - this is a pure C++ extension built by setup.py
 [tool.setuptools]
@@ -51,10 +57,14 @@ package-dir = {"" = "python"}
 [tool.setuptools.packages.find]
 where = ["python"]
 
+[tool.setuptools.dynamic]
+version = {attr = "droute._version.__version__"}
+
 [tool.black]
 line-length = 88
-target-version = ['py38', 'py39', 'py310', 'py311']
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312', 'py313']
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/python"]
 python_files = ["test_*.py"]
+addopts = "-v --strict-markers"

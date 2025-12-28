@@ -1,5 +1,7 @@
 include README.md
 include LICENSE
+include CHANGELOG.md
+include SECURITY.md
 include CMakeLists.txt
 include setup.py
 include pyproject.toml
@@ -9,3 +11,5 @@ recursive-include src *.cpp *.c
 recursive-include python *.cpp *.py
 recursive-include external *.hpp *.h
 global-exclude *.pyc *.pyo *.o *.obj *.so *.dylib *.dll
+global-exclude __pycache__
+global-exclude *.egg-info

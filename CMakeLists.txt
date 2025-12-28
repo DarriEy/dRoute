@@ -276,10 +276,17 @@ if(DMC_BUILD_PYTHON)
     endif()
     
     message(STATUS "Building Python bindings")
-    
+
+    # Read version from _version.py
+    file(READ "${CMAKE_SOURCE_DIR}/python/droute/_version.py" VERSION_FILE_CONTENTS)
+    string(REGEX MATCH "__version__ = \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _ ${VERSION_FILE_CONTENTS})
+    set(DMC_VERSION ${CMAKE_MATCH_1})
+    message(STATUS "dRoute version: ${DMC_VERSION}")
+
     # Create the Python module
-    pybind11_add_module(pydmc_route python/bindings.cpp)
-    target_link_libraries(pydmc_route PRIVATE dmc_route)
+    pybind11_add_module(_droute_core python/bindings.cpp)
+    target_link_libraries(_droute_core PRIVATE dmc_route)
+    target_compile_definitions(_droute_core PRIVATE DMC_VERSION="${DMC_VERSION}")
     
     # Set output name and properties
     if(DEFINED CMAKE_LIBRARY_OUTPUT_DIRECTORY)
@@ -287,28 +294,28 @@ if(DMC_BUILD_PYTHON)
     else()
         set(_pydmc_route_output_dir "${CMAKE_BINARY_DIR}/python")
     endif()
-    set_target_properties(pydmc_route PROPERTIES
-        OUTPUT_NAME pydmc_route
+    set_target_properties(_droute_core PROPERTIES
+        OUTPUT_NAME _droute_core
         LIBRARY_OUTPUT_DIRECTORY "${_pydmc_route_output_dir}"
     )
     
     # Install Python module
     if(DEFINED SKBUILD)
         # If building with scikit-build, install to the package directory
-        install(TARGETS pydmc_route DESTINATION .)
+        install(TARGETS _droute_core DESTINATION .)
     else()
         # Otherwise install to lib/pythonX.Y/site-packages
-        install(TARGETS pydmc_route 
+        install(TARGETS _droute_core
             LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/python${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}/site-packages
         )
     endif()
-    
-    message(STATUS "Python module will be built as: pydmc_route")
+
+    message(STATUS "Python module will be built as: _droute_core")
 endif()
 
 if(DMC_ENABLE_ENZYME AND DMC_ENZYME_AVAILABLE)
-    target_compile_definitions(pydmc_route PRIVATE DMC_USE_ENZYME)
-    target_compile_options(pydmc_route PRIVATE ${ENZYME_COMPILE_FLAGS})
+    target_compile_definitions(_droute_core PRIVATE DMC_USE_ENZYME)
+    target_compile_options(_droute_core PRIVATE ${ENZYME_COMPILE_FLAGS})
 endif()
 
 # ============ Executable for Testing ============

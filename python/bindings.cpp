@@ -197,9 +197,9 @@ static double routing_objective(
 
 #endif // DMC_USE_ENZYME
 
- PYBIND11_MODULE(pydmc_route, m) {
+ PYBIND11_MODULE(_droute_core, m) {
      m.doc() = R"pbdoc(
-         dMC-Route: Differentiable River Routing Library
+         dRoute: Differentiable River Routing Library
          ------------------------------------------------
          
          A high-performance, differentiable routing library for
@@ -1513,6 +1513,10 @@ static double routing_objective(
      // =========================================================================
      // Version info
      // =========================================================================
-    m.attr("__version__") = "0.5.0";
-     m.attr("__author__") = "dMC-Route Authors";
+#ifdef DMC_VERSION
+    m.attr("__version__") = DMC_VERSION;
+#else
+    m.attr("__version__") = "0.5.0";  // Fallback
+#endif
+     m.attr("__author__") = "Darri Eythorsson";
  }
