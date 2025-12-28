@@ -55,7 +55,7 @@ jobs:
 
       - name: Editable install (pip -e) first
         run: |
-          pip install -e .
+          CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" pip install -e .
           python -c "import droute; print(f'Editable install OK: {droute.__version__}')"
 
       - name: Full CMake build (all flags)
