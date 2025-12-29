@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 project(dmc_route 
-    VERSION 0.5.0 
+    VERSION 0.5.1 
     DESCRIPTION "Differentiable Muskingum-Cunge Routing"
     LANGUAGES CXX
 )

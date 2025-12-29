@@ -1516,7 +1516,7 @@ static double routing_objective(
 #ifdef DMC_VERSION
     m.attr("__version__") = DMC_VERSION;
 #else
-    m.attr("__version__") = "0.5.0";  // Fallback
+    m.attr("__version__") = "0.5.1";  // Fallback
 #endif
      m.attr("__author__") = "Darri Eythorsson";
  }

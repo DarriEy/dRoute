@@ -14,7 +14,7 @@ def test_version():
     import droute
     assert hasattr(droute, '__version__')
     assert isinstance(droute.__version__, str)
-    assert droute.__version__ == "0.5.0"
+    assert droute.__version__ == "0.5.1"
 
 
 def test_author():

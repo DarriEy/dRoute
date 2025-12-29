@@ -5,6 +5,10 @@ All notable changes to dRoute will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2025-12-28
+- Package BMI header in sdist to avoid network fetch during build.
+- Set CMake policy minimum to support newer CMake versions in build environments.
+
 ## [0.5.0] - 2025-12-27
 
 ### Added
@@ -46,4 +50,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Previous development versions (pre-0.5.0) were not released to PyPI.
 
+[0.5.1]: https://github.com/DarriEy/dRoute/releases/tag/v0.5.1
 [0.5.0]: https://github.com/DarriEy/dRoute/releases/tag/v0.5.0

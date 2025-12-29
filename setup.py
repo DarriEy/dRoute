@@ -40,6 +40,7 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
             "-DDMC_BUILD_PYTHON=ON",
             "-DDMC_BUILD_TESTS=OFF",
         ]
@@ -75,7 +76,7 @@ class CMakeBuild(build_ext):
 
 setup(
     name="droute",
-    version="0.5.0",
+    version="0.5.1",
     packages=find_packages(where="python"),
     package_dir={"": "python"},
     ext_modules=[CMakeExtension("_droute_core")],
