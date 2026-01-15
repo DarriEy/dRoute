@@ -14,9 +14,24 @@ namespace dmc {
 
 /**
  * BMI adapter for MuskingumCungeRouter.
- * 
+ *
  * Provides the standard CSDMS BMI interface plus extensions
  * for differentiable coupling.
+ *
+ * IMPORTANT LIMITATION - GetValuePtr():
+ * The GetValuePtr() method returns a pointer to an internal buffer that is
+ * COPIED from the model state, NOT a direct pointer to the model's internal
+ * state variables. This is because MuskingumCungeRouter uses struct-of-arrays
+ * storage (individual Reach objects) rather than contiguous arrays.
+ *
+ * Consequences:
+ * - Reading via GetValuePtr() is safe but incurs a copy overhead
+ * - Writing to the returned pointer will NOT update the model state
+ * - Data assimilation workflows that modify state via GetValuePtr() will fail
+ *
+ * For workflows requiring true zero-copy access, use EnzymeRouter or
+ * ParallelEnzymeRouter which store Q_out_ in contiguous arrays accessible
+ * via get_discharge_ptr().
  */
 class BmiMuskingumCunge : public bmi::Bmi {
 public:
@@ -282,14 +297,9 @@ inline void BmiMuskingumCunge::GetValue(std::string name, void* dest) {
 }
 
 inline void* BmiMuskingumCunge::GetValuePtr(std::string name) {
-    // WARNING: This implementation copies to a buffer, NOT true zero-copy!
-    // The BMI spec requires returning a pointer to the actual model state,
-    // but MuskingumCungeRouter uses struct-of-arrays storage (Reach objects).
-    // For true zero-copy, use EnzymeRouter or ParallelEnzymeRouter which
-    // store Q_out_ in a contiguous array accessible via get_discharge_ptr().
-    //
-    // Modifying data through this pointer will NOT update the model state.
-    // This is suitable for read-only coupling but breaks data assimilation.
+    // WARNING: Returns pointer to COPIED data, not true model state.
+    // See class documentation for details and alternatives.
+    // Writes to this pointer will NOT update model state.
     GetValue(name, discharge_buffer_.data());
     return discharge_buffer_.data();
 }

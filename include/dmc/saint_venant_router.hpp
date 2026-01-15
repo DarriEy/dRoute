@@ -4,12 +4,12 @@
 /**
  * @file saint_venant_router.hpp
  * @brief Full dynamic Saint-Venant Equations solver using SUNDIALS CVODES
- * 
+ *
  * Solves the 1D shallow water equations (Saint-Venant):
- * 
+ *
  *   Continuity:  ∂A/∂t + ∂Q/∂x = q_lat
  *   Momentum:    ∂Q/∂t + ∂(Q²/A)/∂x + gA∂h/∂x = gA(S₀ - Sf)
- * 
+ *
  * where:
  *   A = cross-sectional area [m²]
  *   Q = discharge [m³/s]
@@ -18,10 +18,11 @@
  *   S₀ = bed slope [-]
  *   Sf = friction slope (Manning) [-]
  *   g = gravitational acceleration [m/s²]
- * 
+ *
  * Spatial discretization: Finite Volume with Rusanov flux
  * Time integration: CVODES (implicit BDF with Newton iteration)
- * Gradients: CVODES adjoint sensitivity analysis
+ * Gradients: Finite difference approximation (for proper CVODES adjoint
+ *            sensitivity with Enzyme AD, use SaintVenantEnzyme instead)
  */
 
 #include "network.hpp"
@@ -762,12 +763,13 @@ inline void SaintVenantRouter::record_output(int reach_id) {
 }
 
 inline void SaintVenantRouter::compute_gradients_timeseries(
-    int reach_id, 
+    int reach_id,
     const std::vector<double>& dL_dQ) {
-    
-    // For now, use numerical gradient (finite difference on Manning's n)
-    // TODO: Implement proper CVODES adjoint sensitivity
-    
+
+    // This implementation uses finite difference approximation for gradients.
+    // For efficient, exact gradients via CVODES adjoint sensitivity with Enzyme AD,
+    // use the SaintVenantEnzyme class from saint_venant_enzyme.hpp instead.
+
     auto it = output_history_.find(reach_id);
     if (it == output_history_.end()) {
         std::cerr << "No recorded outputs for reach " << reach_id << std::endl;

@@ -62,10 +62,13 @@ struct SaintVenantEnzymeConfig : public SaintVenantConfig {
     // Adjoint-specific settings
     int adjoint_checkpoint_steps = 100;   // Steps between checkpoints
     bool use_hermite_interpolation = true; // Hermite vs polynomial interpolation
-    
+
     // Enzyme options
     bool use_enzyme_jacobian = true;      // Use Enzyme for Jacobian (vs FD)
     bool use_enzyme_adjoint = true;       // Use Enzyme for adjoint RHS
+
+    // Debug options
+    bool verbose = false;                 // Print debug information during initialization
 };
 
 // ============================================================================
@@ -364,17 +367,18 @@ inline void SaintVenantEnzyme::setup_cvodes() {
     // Set max steps
     flag = CVodeSetMaxNumSteps(cvode_mem_, config_.max_steps);
     
-    std::cout << "SaintVenantEnzyme: CVODES initialized with "
-              << total_state_size_ << " state variables" << std::endl;
-    
+    if (config_.verbose) {
+        std::cout << "SaintVenantEnzyme: CVODES initialized with "
+                  << total_state_size_ << " state variables" << std::endl;
 #ifdef DMC_USE_ENZYME
-    if (config_.use_enzyme_jacobian) {
-        std::cout << "  Using Enzyme AD for Jacobian computation" << std::endl;
-    }
-    if (config_.use_enzyme_adjoint) {
-        std::cout << "  Using Enzyme AD for adjoint sensitivity" << std::endl;
-    }
+        if (config_.use_enzyme_jacobian) {
+            std::cout << "  Using Enzyme AD for Jacobian computation" << std::endl;
+        }
+        if (config_.use_enzyme_adjoint) {
+            std::cout << "  Using Enzyme AD for adjoint sensitivity" << std::endl;
+        }
 #endif
+    }
 }
 
 inline void SaintVenantEnzyme::setup_adjoint() {
@@ -388,9 +392,11 @@ inline void SaintVenantEnzyme::setup_adjoint() {
         std::cerr << "Error initializing CVODES adjoint" << std::endl;
         return;
     }
-    
-    std::cout << "  CVODES Adjoint initialized with checkpoint stride = "
-              << config_.adjoint_checkpoint_steps << std::endl;
+
+    if (config_.verbose) {
+        std::cout << "  CVODES Adjoint initialized with checkpoint stride = "
+                  << config_.adjoint_checkpoint_steps << std::endl;
+    }
 }
 
 inline void SaintVenantEnzyme::cleanup_cvodes() {
@@ -1038,9 +1044,11 @@ inline void SaintVenantEnzyme::compute_gradients(int gauge_reach_id,
     SUNLinSolFree(LSB);
     SUNMatDestroy(JB);
     N_VDestroy(qB);
-    
-    std::cout << "  Gradients computed via CVODES adjoint + Enzyme" << std::endl;
-    
+
+    if (config_.verbose) {
+        std::cout << "  Gradients computed via CVODES adjoint + Enzyme" << std::endl;
+    }
+
 #else
     std::cerr << "SUNDIALS required for adjoint gradient computation" << std::endl;
 #endif

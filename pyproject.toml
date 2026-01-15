@@ -54,7 +54,6 @@ Repository = "https://github.com/DarriEy/dRoute"
 [tool.setuptools]
 include-package-data = true
 license-files = ["LICENSE"]
-py-modules = ["pydmc_route"]
 package-dir = {"" = "python"}
 zip-safe = false
 
